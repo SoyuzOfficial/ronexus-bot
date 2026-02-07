@@ -34,30 +34,23 @@ client.once('ready', async () => {
   console.log(`✅ ${client.user.tag} is online!`);
   
   // Register slash commands
-  const commands = [
-    {
-      name: 'activate',
-      description: 'Activate the bot with a license key',
-      options: [{
-        name: 'license',
-        description: 'Your license key',
-        type: 3,
-        required: true
-      }]
-    },
-    {
-      name: 'verify',
-      description: 'Verify your Roblox account via OAuth2'
-    },
-    {
-      name: 'setup',
-      description: 'Setup wizard for server admins'
-    },
-    {
-      name: 'points',
-      description: 'Check your points'
-    }
-  ];
+const commands = [
+  { name: 'activate', description: 'Activate bot with license', options: [{ name: 'license', description: 'License key', type: 3, required: true }] },
+  { name: 'verify', description: 'Verify Roblox account' },
+  { name: 'setup', description: 'Setup wizard' },
+  { name: 'points', description: 'Check points', options: [{ name: 'user', description: 'User to check', type: 6, required: false }] },
+  { name: 'addpoints', description: 'Add points', options: [{ name: 'user', type: 6, required: true }, { name: 'amount', type: 4, required: true }, { name: 'reason', type: 3, required: false }] },
+  { name: 'removepoints', description: 'Remove points', options: [{ name: 'user', type: 6, required: true }, { name: 'amount', type: 4, required: true }] },
+  { name: 'leaderboard', description: 'Points leaderboard' },
+  { name: 'backgroundcheck', description: 'Check user background', options: [{ name: 'user', type: 6, required: true }] },
+  { name: 'blacklist-user', description: 'Blacklist Roblox user', options: [{ name: 'roblox_id', type: 4, required: true }, { name: 'reason', type: 3, required: true }] },
+  { name: 'blacklist-group', description: 'Blacklist Roblox group', options: [{ name: 'group_id', type: 4, required: true }, { name: 'reason', type: 3, required: true }] },
+  { name: 'unblacklist', description: 'Remove from blacklist', options: [{ name: 'roblox_id', type: 4, required: true }] },
+  { name: 'viewblacklist', description: 'View blacklist' },
+  { name: 'kick', description: 'Kick user', options: [{ name: 'user', type: 6, required: true }, { name: 'reason', type: 3, required: false }] },
+  { name: 'ban', description: 'Ban user', options: [{ name: 'user', type: 6, required: true }, { name: 'reason', type: 3, required: false }] },
+  { name: 'warn', description: 'Warn user', options: [{ name: 'user', type: 6, required: true }, { name: 'reason', type: 3, required: true }] }
+];
 
   try {
     await client.application.commands.set(commands);
