@@ -42,17 +42,48 @@ client.on('interactionCreate', async interaction => {
   const { commandName, guildId, user, options } = interaction;
 
   if (commandName === 'activate') {
-    const license = options.getString('license');
-    try {
-      const licCheck = await pool.query('SELECT * FROM licenses WHERE license_key = $1 AND is_active = true', [license]);
-      if (licCheck.rows.length === 0) return interaction.reply({ content: '❌ Invalid license!', ephemeral: true });
-      const guildCheck = await pool.query('SELECT * FROM guild_licenses WHERE guild_id = $1', [guildId]);
-      if (guildCheck.rows.length > 0) return interaction.reply({ content: '✅ Already activated!', ephemeral: true });
-      await pool.query('INSERT INTO guild_licenses (guild_id, license_key, activated_by) VALUES ($1, $2, $3)', [guildId, license, user.id]);
-      await pool.query('INSERT INTO guild_config (guild_id) VALUES ($1) ON CONFLICT DO NOTHING', [guildId]);
-      return interaction.reply({ embeds: [new EmbedBuilder().setColor('#00FF00').setTitle('✅ Activated!').setDescription('Bot is now active in this server!')] });
-    } catch (e) { console.error(e); return interaction.reply({ content: '❌ Error!', ephemeral: true }); }
+  const license = options.getString('license');
+  try {
+    // Check license exists
+    const licCheck = await pool.query('SELECT * FROM licenses WHERE license_key = $1 AND is_active = true', [license]);
+    if (licCheck.rows.length === 0) {
+      return interaction.reply({ content: '❌ Invalid license key!', ephemeral: true });
+    }
+
+    // Check if already activated
+    const guildCheck = await pool.query('SELECT * FROM guild_licenses WHERE guild_id = $1', [guildId]);
+    if (guildCheck.rows.length > 0) {
+      return interaction.reply({ content: '✅ Server already activated!', ephemeral: true });
+    }
+
+    // Activate server
+    await pool.query(
+      'INSERT INTO guild_licenses (guild_id, license_key, activated_by) VALUES ($1, $2, $3)', 
+      [guildId, license, user.id]
+    );
+
+    // Create guild config (if doesn't exist)
+    await pool.query(
+      'INSERT INTO guild_config (guild_id) VALUES ($1) ON CONFLICT (guild_id) DO NOTHING', 
+      [guildId]
+    );
+
+    return interaction.reply({ 
+      embeds: [new EmbedBuilder()
+        .setColor('#00FF00')
+        .setTitle('✅ Bot Activated!')
+        .setDescription(`Server successfully activated!\n\nUse \`/verify\` to link your Roblox account.`)
+      ] 
+    });
+
+  } catch (e) { 
+    console.error('Activation error:', e); 
+    return interaction.reply({ 
+      content: `❌ Activation error: ${e.message}`, 
+      ephemeral: true 
+    }); 
   }
+}
 
   const activated = await pool.query('SELECT * FROM guild_licenses WHERE guild_id = $1', [guildId]);
   if (activated.rows.length === 0 && commandName !== 'activate') {
