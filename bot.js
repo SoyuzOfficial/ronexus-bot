@@ -16,21 +16,100 @@ const pendingVerifications = new Map();
 client.once('ready', async () => {
   console.log(`✅ ${client.user.tag} is online!`);
   const commands = [
-    { name: 'activate', description: '🔑 Activate bot with license', options: [{ name: 'license', description: 'Your license key', type: 3, required: true }] },
-    { name: 'verify', description: '🔐 Verify Roblox account via OAuth2' },
-    { name: 'setup', description: '⚙️ Server setup wizard', default_member_permissions: PermissionFlagsBits.Administrator.toString() },
-    { name: 'points', description: '💰 Check points', options: [{ name: 'user', description: 'User to check', type: 6, required: false }] },
-    { name: 'addpoints', description: '➕ Add points to user', default_member_permissions: PermissionFlagsBits.Administrator.toString(), options: [{ name: 'user', type: 6, required: true }, { name: 'amount', type: 4, required: true }, { name: 'reason', type: 3 }] },
-    { name: 'removepoints', description: '➖ Remove points', default_member_permissions: PermissionFlagsBits.Administrator.toString(), options: [{ name: 'user', type: 6, required: true }, { name: 'amount', type: 4, required: true }] },
-    { name: 'leaderboard', description: '🏆 View points leaderboard' },
-    { name: 'backgroundcheck', description: '🔍 Check user background', options: [{ name: 'user', type: 6, required: true }] },
-    { name: 'blacklist', description: '🚫 Blacklist Roblox user', default_member_permissions: PermissionFlagsBits.Administrator.toString(), options: [{ name: 'roblox_id', type: 4, required: true }, { name: 'reason', type: 3, required: true }] },
-    { name: 'unblacklist', description: '✅ Remove from blacklist', default_member_permissions: PermissionFlagsBits.Administrator.toString(), options: [{ name: 'roblox_id', type: 4, required: true }] },
-    { name: 'viewblacklist', description: '📋 View server blacklist' },
-    { name: 'kick', description: '👢 Kick user', default_member_permissions: PermissionFlagsBits.KickMembers.toString(), options: [{ name: 'user', type: 6, required: true }, { name: 'reason', type: 3 }] },
-    { name: 'ban', description: '🔨 Ban user', default_member_permissions: PermissionFlagsBits.BanMembers.toString(), options: [{ name: 'user', type: 6, required: true }, { name: 'reason', type: 3 }] },
-    { name: 'warn', description: '⚠️ Warn user', default_member_permissions: PermissionFlagsBits.ModerateMembers.toString(), options: [{ name: 'user', type: 6, required: true }, { name: 'reason', type: 3, required: true }] }
-  ];
+  { 
+    name: 'activate', 
+    description: '🔑 Activate bot with license', 
+    options: [{ name: 'license', description: 'Your license key', type: 3, required: true }] 
+  },
+  { 
+    name: 'verify', 
+    description: '🔐 Verify Roblox account via OAuth2' 
+  },
+  { 
+    name: 'setup', 
+    description: '⚙️ Server setup wizard', 
+    default_member_permissions: PermissionFlagsBits.Administrator.toString() 
+  },
+  { 
+    name: 'points', 
+    description: '💰 Check points', 
+    options: [{ name: 'user', description: 'User to check points', type: 6, required: false }] 
+  },
+  { 
+    name: 'addpoints', 
+    description: '➕ Add points to user', 
+    default_member_permissions: PermissionFlagsBits.Administrator.toString(), 
+    options: [
+      { name: 'user', description: 'Target user', type: 6, required: true }, 
+      { name: 'amount', description: 'Points to add', type: 4, required: true }, 
+      { name: 'reason', description: 'Reason for points', type: 3, required: false }
+    ] 
+  },
+  { 
+    name: 'removepoints', 
+    description: '➖ Remove points', 
+    default_member_permissions: PermissionFlagsBits.Administrator.toString(), 
+    options: [
+      { name: 'user', description: 'Target user', type: 6, required: true }, 
+      { name: 'amount', description: 'Points to remove', type: 4, required: true }
+    ] 
+  },
+  { 
+    name: 'leaderboard', 
+    description: '🏆 View points leaderboard' 
+  },
+  { 
+    name: 'backgroundcheck', 
+    description: '🔍 Check user background', 
+    options: [{ name: 'user', description: 'User to check', type: 6, required: true }] 
+  },
+  { 
+    name: 'blacklist', 
+    description: '🚫 Blacklist Roblox user', 
+    default_member_permissions: PermissionFlagsBits.Administrator.toString(), 
+    options: [
+      { name: 'roblox_id', description: 'Roblox user ID', type: 4, required: true }, 
+      { name: 'reason', description: 'Reason for blacklist', type: 3, required: true }
+    ] 
+  },
+  { 
+    name: 'unblacklist', 
+    description: '✅ Remove from blacklist', 
+    default_member_permissions: PermissionFlagsBits.Administrator.toString(), 
+    options: [{ name: 'roblox_id', description: 'Roblox user ID', type: 4, required: true }] 
+  },
+  { 
+    name: 'viewblacklist', 
+    description: '📋 View server blacklist' 
+  },
+  { 
+    name: 'kick', 
+    description: '👢 Kick user', 
+    default_member_permissions: PermissionFlagsBits.KickMembers.toString(), 
+    options: [
+      { name: 'user', description: 'User to kick', type: 6, required: true }, 
+      { name: 'reason', description: 'Kick reason', type: 3, required: false }
+    ] 
+  },
+  { 
+    name: 'ban', 
+    description: '🔨 Ban user', 
+    default_member_permissions: PermissionFlagsBits.BanMembers.toString(), 
+    options: [
+      { name: 'user', description: 'User to ban', type: 6, required: true }, 
+      { name: 'reason', description: 'Ban reason', type: 3, required: false }
+    ] 
+  },
+  { 
+    name: 'warn', 
+    description: '⚠️ Warn user', 
+    default_member_permissions: PermissionFlagsBits.ModerateMembers.toString(), 
+    options: [
+      { name: 'user', description: 'User to warn', type: 6, required: true }, 
+      { name: 'reason', description: 'Warning reason', type: 3, required: true }
+    ] 
+  }
+];
   await client.application.commands.set(commands);
   console.log('✅ Commands registered!');
 });
