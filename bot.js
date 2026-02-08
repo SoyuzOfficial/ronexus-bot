@@ -177,10 +177,10 @@ client.on('interactionCreate', async interaction => {
       );
       
       // Create config
-      await pool.query(
-        'INSERT INTO guild_config (guild_id) VALUES ($1) ON CONFLICT (guild_id) DO NOTHING', 
-        [guildId]
-      );
+await pool.query(
+  'INSERT INTO guild_config (guild_id) VALUES ($1) ON CONFLICT (guild_id) DO NOTHING', 
+  [guildId]
+);
       
       return interaction.reply({ 
         embeds: [new EmbedBuilder()
