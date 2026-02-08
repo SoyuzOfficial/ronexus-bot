@@ -64,9 +64,9 @@ client.on('interactionCreate', async interaction => {
 
     // Create guild config (if doesn't exist)
     await pool.query(
-      'INSERT INTO guild_config (guild_id) VALUES ($1) ON CONFLICT (guild_id) DO NOTHING', 
-      [guildId]
-    );
+  'INSERT INTO guild_licenses (guild_id, license_key) VALUES ($1, $2)', 
+  [guildId, license]
+);
 
     return interaction.reply({ 
       embeds: [new EmbedBuilder()
