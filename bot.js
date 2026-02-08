@@ -3,7 +3,6 @@
  * If this crashes now, Discord itself is on life support.
  */
 
-require('dotenv').config();
 const { 
   Client,
   GatewayIntentBits,
