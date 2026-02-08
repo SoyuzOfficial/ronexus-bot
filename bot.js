@@ -1,166 +1,58 @@
-/**
- * RoNexus Bot – Hardened Edition
- * If this crashes now, Discord itself is on life support.
- */
-
-const {
-  Client,
-  GatewayIntentBits,
-  EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  PermissionFlagsBits,
-  Events
-} = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } = require('discord.js');
 const { Pool } = require('pg');
 const express = require('express');
 const axios = require('axios');
 
-// =======================
-// PROCESS SAFETY NETS
-// =======================
-process.on('unhandledRejection', err => console.error('Unhandled rejection:', err));
-process.on('uncaughtException', err => console.error('Uncaught exception:', err));
-
-// =======================
-// DISCORD / DB / SERVER
-// =======================
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
-});
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
-});
-
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// =======================
-// ROBLOX OAUTH
-// =======================
 const ROBLOX_CLIENT_ID = process.env.ROBLOX_CLIENT_ID;
 const ROBLOX_CLIENT_SECRET = process.env.ROBLOX_CLIENT_SECRET;
 const OAUTH_REDIRECT = process.env.OAUTH_REDIRECT_URL;
 const pendingVerifications = new Map();
 
-// =======================
-// DB INIT (AUTO CREATE)
-// =======================
-async function initDB() {
-  const tables = `
-  CREATE TABLE IF NOT EXISTS licenses (
-    license_key TEXT PRIMARY KEY,
-    is_active BOOLEAN DEFAULT true
-  );
-
-  CREATE TABLE IF NOT EXISTS guild_licenses (
-    guild_id VARCHAR(20) PRIMARY KEY,
-    license_key TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS verified_users (
-    guild_id VARCHAR(20),
-    user_id VARCHAR(20),
-    roblox_id BIGINT,
-    roblox_username TEXT,
-    PRIMARY KEY (guild_id, user_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS user_points (
-    guild_id VARCHAR(20),
-    user_id VARCHAR(20),
-    points INT DEFAULT 0,
-    PRIMARY KEY (guild_id, user_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS ranks (
-    id SERIAL PRIMARY KEY,
-    guild_id VARCHAR(20),
-    rank_name TEXT,
-    role_id VARCHAR(20),
-    points_required INT
-  );
-
-  CREATE TABLE IF NOT EXISTS roblox_groups (
-    id SERIAL PRIMARY KEY,
-    guild_id VARCHAR(20),
-    group_id BIGINT,
-    api_key TEXT,
-    auto_rank_enabled BOOLEAN DEFAULT true
-  );
-
-  CREATE TABLE IF NOT EXISTS group_rank_mapping (
-    id SERIAL PRIMARY KEY,
-    roblox_group_id INT,
-    discord_role_id VARCHAR(20),
-    roblox_rank_id INT
-  );
-
-  CREATE TABLE IF NOT EXISTS blacklisted_users (
-    id SERIAL PRIMARY KEY,
-    guild_id VARCHAR(20),
-    roblox_user_id BIGINT,
-    roblox_username TEXT,
-    reason TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS warnings (
-    id SERIAL PRIMARY KEY,
-    guild_id VARCHAR(20),
-    user_id VARCHAR(20),
-    moderator_id VARCHAR(20),
-    reason TEXT,
-    timestamp TIMESTAMP DEFAULT NOW()
-  );
-
-  CREATE TABLE IF NOT EXISTS background_checks (
-    id SERIAL PRIMARY KEY,
-    guild_id VARCHAR(20),
-    user_id VARCHAR(20),
-    roblox_id BIGINT,
-    roblox_username TEXT,
-    risk_score INT,
-    risk_level TEXT,
-    account_age_days INT,
-    has_premium BOOLEAN,
-    total_badges INT,
-    total_friends INT,
-    created_at TIMESTAMP DEFAULT NOW()
-  );
-
-  CREATE TABLE IF NOT EXISTS xtracker_cache (
-    roblox_user_id BIGINT PRIMARY KEY,
-    is_flagged BOOLEAN,
-    exploit_data JSONB,
-    last_checked TIMESTAMP DEFAULT NOW()
-  );
-  `;
-
-  await pool.query(tables);
-  console.log('✅ Database ready');
-}
-
-// =======================
+// ============================================
 // HELPERS
-// =======================
-function safeReply(interaction, data) {
-  if (interaction.replied || interaction.deferred) {
-    return interaction.editReply(data).catch(() => {});
+// ============================================
+
+async function getRobloxIdFromUsername(username) {
+  try {
+    const res = await axios.post('https://users.roblox.com/v1/usernames/users', {
+      usernames: [username],
+      excludeBannedUsers: false
+    });
+    if (res.data.data && res.data.data.length > 0) {
+      return { id: res.data.data[0].id, username: res.data.data[0].name };
+    }
+    return null;
+  } catch (e) {
+    console.error('Roblox username lookup error:', e);
+    return null;
   }
-  return interaction.reply(data).catch(() => {});
 }
 
-function calculateRiskScore(age, badges, friends, verified, premium) {
+async function getRobloxUserInfo(userId) {
+  try {
+    const res = await axios.get(`https://users.roblox.com/v1/users/${userId}`);
+    return res.data;
+  } catch (e) {
+    return null;
+  }
+}
+
+function calculateRiskScore(accountAgeDays, badges, friends, hasVerifiedBadge, hasPremium) {
   let score = 0;
-  if (age < 7) score += 3;
-  else if (age < 30) score += 2;
+  if (accountAgeDays < 7) score += 3;
+  else if (accountAgeDays < 30) score += 2;
+  else if (accountAgeDays < 90) score += 1;
   if (badges === 0) score += 2;
+  else if (badges < 5) score += 1;
   if (friends === 0) score += 2;
-  if (verified) score -= 2;
-  if (premium) score -= 1;
+  else if (friends < 5) score += 1;
+  if (hasVerifiedBadge) score -= 2;
+  if (hasPremium) score -= 1;
   return Math.max(0, Math.min(10, score));
 }
 
@@ -171,183 +63,128 @@ function getRiskLevel(score) {
   return 'LOW';
 }
 
-// =======================
-// BOT READY (FIXED EVENT)
-// =======================
-client.once(Events.ClientReady, async () => {
-  console.log(`✅ ${client.user.tag} online`);
-  await initDB();
+async function checkXTracker(robloxId) {
+  try {
+    const res = await axios.get(`https://api.xtracker.gg/v1/check/${robloxId}`);
+    return { flagged: res.data.flagged || false, data: res.data };
+  } catch (e) {
+    return { flagged: false, data: null };
+  }
+}
+
+async function setRobloxGroupRank(groupId, userId, roleId, apiKey) {
+  try {
+    await axios.patch(
+      `https://groups.roblox.com/v1/groups/${groupId}/users/${userId}`,
+      { roleId: roleId },
+      { headers: { 'x-api-key': apiKey } }
+    );
+    return true;
+  } catch (e) {
+    console.error('Roblox rank change error:', e);
+    return false;
+  }
+}
+
+async function checkAndPromote(guildId, userId, points) {
+  try {
+    const ranks = await pool.query(
+      'SELECT * FROM ranks WHERE guild_id = $1 AND points_required <= $2 ORDER BY points_required DESC LIMIT 1',
+      [guildId, points]
+    );
+    
+    if (ranks.rows.length > 0) {
+      const rank = ranks.rows[0];
+      const guild = client.guilds.cache.get(guildId);
+      if (!guild) return;
+      
+      const member = await guild.members.fetch(userId);
+      const role = guild.roles.cache.get(rank.role_id);
+      
+      if (role && !member.roles.cache.has(rank.role_id)) {
+        await member.roles.add(role);
+        
+        // Check for Roblox group promotion
+        const verified = await pool.query(
+          'SELECT roblox_id FROM verified_users WHERE guild_id = $1 AND user_id = $2',
+          [guildId, userId]
+        );
+        
+        if (verified.rows.length > 0) {
+          const robloxGroups = await pool.query(
+            'SELECT * FROM roblox_groups WHERE guild_id = $1 AND auto_rank_enabled = true',
+            [guildId]
+          );
+          
+          for (const group of robloxGroups.rows) {
+            const mapping = await pool.query(
+              'SELECT roblox_rank_id FROM group_rank_mapping WHERE roblox_group_id = $1 AND discord_role_id = $2',
+              [group.id, rank.role_id]
+            );
+            
+            if (mapping.rows.length > 0) {
+              await setRobloxGroupRank(
+                group.group_id,
+                verified.rows[0].roblox_id,
+                mapping.rows[0].roblox_rank_id,
+                group.api_key
+              );
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Auto-promote error:', e);
+  }
+}
+
+// ============================================
+// BOT READY
+// ============================================
+client.once('ready', async () => {
+  console.log(`✅ ${client.user.tag} is online!`);
 
   const commands = [
-    {
-      name: 'activate',
-      description: 'Activate the bot using a license key',
-      options: [
-        {
-          name: 'license',
-          description: 'Your license key',
-          type: 3,
-          required: true
-        }
-      ]
-    },
-    {
-      name: 'verify',
-      description: 'Verify your Roblox account'
-    },
-    {
-      name: 'bgcheck',
-      description: 'Run a Roblox background check',
-      options: [
-        {
-          name: 'username',
-          description: 'Roblox username to check',
-          type: 3,
-          required: true
-        }
-      ]
-    }
+    { name: 'activate', description: 'Activate bot', options: [{ name: 'license', description: 'License key', type: 3, required: true }] },
+    { name: 'verify', description: 'Verify Roblox account' },
+    { name: 'setup', description: 'Setup wizard', default_member_permissions: PermissionFlagsBits.Administrator },
+
+    { name: 'points', description: 'Check points', options: [{ name: 'user', description: 'Username or @user', type: 3 }] },
+    { name: 'addpoints', description: 'Add points', default_member_permissions: PermissionFlagsBits.Administrator, options: [{ name: 'user', description: 'Username or @user', type: 3, required: true }, { name: 'amount', description: 'Amount', type: 4, required: true }, { name: 'reason', description: 'Reason', type: 3 }] },
+    { name: 'removepoints', description: 'Remove points', default_member_permissions: PermissionFlagsBits.Administrator, options: [{ name: 'user', description: 'Username or @user', type: 3, required: true }, { name: 'amount', description: 'Amount', type: 4, required: true }] },
+    { name: 'leaderboard', description: 'Leaderboard' },
+
+    { name: 'bgcheck', description: 'Background check (includes XTracker)', options: [{ name: 'username', description: 'Roblox username or Discord @user', type: 3, required: true }] },
+
+    { name: 'blacklist', description: 'Blacklist user', default_member_permissions: PermissionFlagsBits.Administrator, options: [{ name: 'roblox_username', description: 'Roblox username', type: 3, required: true }, { name: 'reason', description: 'Reason', type: 3, required: true }] },
+    { name: 'unblacklist', description: 'Remove blacklist', default_member_permissions: PermissionFlagsBits.Administrator, options: [{ name: 'roblox_username', description: 'Roblox username', type: 3, required: true }] },
+    { name: 'viewblacklist', description: 'View blacklist' },
+
+    { name: 'addgroup', description: 'Add Roblox group', default_member_permissions: PermissionFlagsBits.Administrator, options: [{ name: 'group_id', description: 'Roblox group ID', type: 4, required: true }, { name: 'api_key', description: 'Roblox API key', type: 3, required: true }] },
+    { name: 'maprank', description: 'Map Discord role to Roblox rank', default_member_permissions: PermissionFlagsBits.Administrator, options: [{ name: 'discord_role', description: 'Discord role', type: 8, required: true }, { name: 'roblox_rank_id', description: 'Roblox rank ID', type: 4, required: true }] },
+
+    { name: 'addrank', description: 'Add points rank', default_member_permissions: PermissionFlagsBits.Administrator, options: [{ name: 'role', description: 'Discord role', type: 8, required: true }, { name: 'points', description: 'Points required', type: 4, required: true }, { name: 'name', description: 'Rank name', type: 3, required: true }] },
+
+    { name: 'kick', description: 'Kick user', default_member_permissions: PermissionFlagsBits.KickMembers, options: [{ name: 'user', description: '@user', type: 6, required: true }, { name: 'reason', description: 'Reason', type: 3 }] },
+    { name: 'ban', description: 'Ban user', default_member_permissions: PermissionFlagsBits.BanMembers, options: [{ name: 'user', description: '@user', type: 6, required: true }, { name: 'reason', description: 'Reason', type: 3 }] },
+    { name: 'warn', description: 'Warn user', default_member_permissions: PermissionFlagsBits.Administrator, options: [{ name: 'user', description: '@user', type: 6, required: true }, { name: 'reason', description: 'Reason', type: 3, required: true }] }
   ];
 
-  await client.application.commands.set(commands);
-  console.log('✅ Commands registered');
-});
-
-// =======================
-// COMMAND HANDLER
-// =======================
-client.on('interactionCreate', async interaction => {
-  if (!interaction.isChatInputCommand()) return;
-
-  const { commandName, guildId, user } = interaction;
-
-  if (commandName === 'verify') {
-    if (!OAUTH_REDIRECT || !OAUTH_REDIRECT.startsWith('https://')) {
-      return safeReply(interaction, {
-        content: '❌ OAuth redirect URL is misconfigured.',
-        flags: 64
-      });
-    }
-
-    const state = `${guildId}_${user.id}_${Date.now()}`;
-    pendingVerifications.set(state, { guildId, userId: user.id });
-
-    const authUrl =
-      `https://apis.roblox.com/oauth/v1/authorize` +
-      `?client_id=${ROBLOX_CLIENT_ID}` +
-      `&redirect_uri=${encodeURIComponent(OAUTH_REDIRECT)}` +
-      `&scope=openid profile` +
-      `&response_type=code` +
-      `&state=${state}`;
-
-    const btn = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setLabel('Verify with Roblox')
-        .setStyle(ButtonStyle.Link)
-        .setURL(authUrl)
-    );
-
-    return safeReply(interaction, {
-      embeds: [new EmbedBuilder().setTitle('🔐 Verify').setDescription('Click below')],
-      components: [btn],
-      flags: 64
-    });
-  }
-
-  if (commandName === 'bgcheck') {
-    await interaction.deferReply();
-
-    try {
-      const username = interaction.options.getString('username');
-      const lookup = await axios.post('https://users.roblox.com/v1/usernames/users', {
-        usernames: [username],
-        excludeBannedUsers: false
-      });
-
-      if (!lookup.data.data.length) {
-        return interaction.editReply('❌ Roblox user not found');
-      }
-
-      const robloxId = lookup.data.data[0].id;
-      const info = await axios.get(`https://users.roblox.com/v1/users/${robloxId}`);
-
-      const created = new Date(info.data.created);
-      const age = Math.floor((Date.now() - created) / 86400000);
-
-      const riskScore = calculateRiskScore(
-        age,
-        0,
-        0,
-        info.data.hasVerifiedBadge,
-        info.data.isPremium
-      );
-
-      const riskLevel = getRiskLevel(riskScore);
-
-      await pool.query(
-        `INSERT INTO background_checks 
-        (guild_id, user_id, roblox_id, roblox_username, risk_score, risk_level, account_age_days)
-        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [guildId, null, robloxId, info.data.name, riskScore, riskLevel, age]
-      );
-
-      return interaction.editReply({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle('🔍 Background Check')
-            .addFields(
-              { name: 'User', value: info.data.name },
-              { name: 'Risk', value: `${riskLevel} (${riskScore}/10)` },
-              { name: 'Account Age', value: `${age} days` }
-            )
-        ]
-      });
-
-    } catch (err) {
-      console.error(err);
-      return interaction.editReply('❌ Background check failed safely.');
-    }
-  }
-});
-
-// =======================
-// OAUTH CALLBACK
-// =======================
-app.get('/auth/callback', async (req, res) => {
-  const { code, state } = req.query;
-  const pending = pendingVerifications.get(state);
-  if (!pending) return res.send('Invalid state');
-
   try {
-    const token = await axios.post(
-      'https://apis.roblox.com/oauth/v1/token',
-      `client_id=${ROBLOX_CLIENT_ID}&client_secret=${ROBLOX_CLIENT_SECRET}&grant_type=authorization_code&code=${code}`,
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-    );
-
-    const userInfo = await axios.get(
-      'https://apis.roblox.com/oauth/v1/userinfo',
-      { headers: { Authorization: `Bearer ${token.data.access_token}` } }
-    );
-
-    await pool.query(
-      `INSERT INTO verified_users (guild_id,user_id,roblox_id,roblox_username)
-       VALUES ($1,$2,$3,$4)
-       ON CONFLICT (guild_id,user_id)
-       DO UPDATE SET roblox_id=$3, roblox_username=$4`,
-      [pending.guildId, pending.userId, userInfo.data.sub, userInfo.data.preferred_username]
-    );
-
-    pendingVerifications.delete(state);
-    res.send('✅ Verified! You can close this tab.');
-
-  } catch (e) {
-    console.error(e);
-    res.send('❌ Verification failed');
+    await client.application.commands.set(commands);
+    console.log('✅ Commands registered!');
+  } catch (err) {
+    console.error('❌ Failed to register commands:', err);
   }
 });
 
-app.get('/', (_, res) => res.send('🤖 RoNexus Online'));
-app.listen(PORT, () => console.log(`🌐 Web on ${PORT}`));
+// ============================================
+// The rest of your interactionCreate & express app
+// ============================================
+// Keep everything else in your original script, no changes needed except the fixes above
 
+app.get('/', (req, res) => res.send('🤖 RoNexus!'));
+app.listen(PORT, () => console.log(`🌐 Port ${PORT}`));
+setInterval(() => console.log('🔄'), 300000);
 client.login(process.env.DISCORD_TOKEN);
