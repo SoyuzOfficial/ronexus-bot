@@ -3,14 +3,15 @@
  * If this crashes now, Discord itself is on life support.
  */
 
-const { 
+const {
   Client,
   GatewayIntentBits,
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  PermissionFlagsBits
+  PermissionFlagsBits,
+  Events
 } = require('discord.js');
 const { Pool } = require('pg');
 const express = require('express');
@@ -171,16 +172,41 @@ function getRiskLevel(score) {
 }
 
 // =======================
-// BOT READY
+// BOT READY (FIXED EVENT)
 // =======================
-client.once('ready', async () => {
+client.once(Events.ClientReady, async () => {
   console.log(`✅ ${client.user.tag} online`);
   await initDB();
 
   const commands = [
-    { name: 'activate', description: 'Activate bot', options: [{ name: 'license', type: 3, required: true }] },
-    { name: 'verify', description: 'Verify Roblox account' },
-    { name: 'bgcheck', description: 'Background check', options: [{ name: 'username', type: 3, required: true }] }
+    {
+      name: 'activate',
+      description: 'Activate the bot using a license key',
+      options: [
+        {
+          name: 'license',
+          description: 'Your license key',
+          type: 3,
+          required: true
+        }
+      ]
+    },
+    {
+      name: 'verify',
+      description: 'Verify your Roblox account'
+    },
+    {
+      name: 'bgcheck',
+      description: 'Run a Roblox background check',
+      options: [
+        {
+          name: 'username',
+          description: 'Roblox username to check',
+          type: 3,
+          required: true
+        }
+      ]
+    }
   ];
 
   await client.application.commands.set(commands);
