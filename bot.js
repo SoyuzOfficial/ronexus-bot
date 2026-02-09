@@ -167,30 +167,62 @@ async function checkXTracker(robloxId) {
   }
   
   try {
+    let isFlagged = false;
+    let cheats = [];
+    let reason = 'Clean - Not in database';
+    
     // Check registry (flagged cheaters)
-    const registryRes = await axios.get(`https://api.xtracker.xyz/api/registry/user?id=${robloxId}`, {
-      headers: { 'Authorization': XTRACKER_API_KEY },
-      timeout: 5000
-    });
+    try {
+      const registryRes = await axios.get(`https://api.xtracker.xyz/api/registry/user?id=${robloxId}`, {
+        headers: { 'Authorization': XTRACKER_API_KEY },
+        timeout: 5000
+      });
+      
+      if (registryRes.data && registryRes.data.flagged) {
+        isFlagged = true;
+        reason = 'Flagged in registry';
+      }
+    } catch (regError) {
+      // 404 = not in database = clean
+      if (regError.response && regError.response.status !== 404) {
+        console.error('Registry error:', regError.message);
+      }
+    }
     
     // Check ownership (cheat ownership)
-    const ownershipRes = await axios.get(`https://api.xtracker.xyz/api/ownership/user?id=${robloxId}`, {
-      headers: { 'Authorization': XTRACKER_API_KEY },
-      timeout: 5000
-    });
-    
-    const isFlagged = registryRes.data.flagged || ownershipRes.data.owns_cheats || false;
-    const cheats = ownershipRes.data.cheats || [];
+    try {
+      const ownershipRes = await axios.get(`https://api.xtracker.xyz/api/ownership/user?id=${robloxId}`, {
+        headers: { 'Authorization': XTRACKER_API_KEY },
+        timeout: 5000
+      });
+      
+      if (ownershipRes.data && ownershipRes.data.owns_cheats) {
+        isFlagged = true;
+        cheats = ownershipRes.data.cheats || [];
+        reason = `Owns cheats: ${cheats.join(', ')}`;
+      }
+    } catch (ownError) {
+      // 404 = not in database = clean
+      if (ownError.response && ownError.response.status !== 404) {
+        console.error('Ownership error:', ownError.message);
+      }
+    }
     
     return { 
       flagged: isFlagged,
       confidence: isFlagged ? 'high' : 'clean',
-      reason: isFlagged ? `Detected: ${cheats.join(', ') || 'Flagged'}` : 'Clean',
+      reason: reason,
       ownership: cheats
     };
+    
   } catch (e) {
     console.error('XTracker error:', e.message);
-    return { flagged: false, confidence: 'error', reason: `API error: ${e.message}`, ownership: [] };
+    return { 
+      flagged: false, 
+      confidence: 'error', 
+      reason: `API error: ${e.message}`, 
+      ownership: [] 
+    };
   }
 }
 
