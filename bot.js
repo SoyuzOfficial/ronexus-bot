@@ -22,7 +22,80 @@ const AUTO_BLACKLIST_GROUPS = [35367142, 35447047, 35163259, 35361192, 14000981,
 async function ensureTablesExist() {
   try {
     console.log('🔧 Creating tables...');
+    
+    // Create all tables with proper columns
     await pool.query(`
+      CREATE TABLE IF NOT EXISTS licenses (
+        id SERIAL PRIMARY KEY,
+        license_key VARCHAR(50) UNIQUE NOT NULL,
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+      
+      CREATE TABLE IF NOT EXISTS guild_licenses (
+        id SERIAL PRIMARY KEY,
+        guild_id VARCHAR(20) UNIQUE NOT NULL,
+        license_key VARCHAR(50) NOT NULL,
+        activated_at TIMESTAMP DEFAULT NOW()
+      );
+      
+      CREATE TABLE IF NOT EXISTS guild_config (
+        guild_id VARCHAR(20) PRIMARY KEY,
+        verified_role_id VARCHAR(20),
+        rank_abbreviation VARCHAR(10)
+      );
+      
+      CREATE TABLE IF NOT EXISTS verified_users (
+        id SERIAL PRIMARY KEY,
+        user_id VARCHAR(20) NOT NULL,
+        guild_id VARCHAR(20) NOT NULL,
+        roblox_id VARCHAR(20) NOT NULL,
+        roblox_username VARCHAR(50) NOT NULL,
+        verified_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(guild_id, user_id)
+      );
+      
+      CREATE TABLE IF NOT EXISTS user_points (
+        id SERIAL PRIMARY KEY,
+        guild_id VARCHAR(20) NOT NULL,
+        user_id VARCHAR(20) NOT NULL,
+        points INT DEFAULT 0,
+        UNIQUE(guild_id, user_id)
+      );
+      
+      CREATE TABLE IF NOT EXISTS ranks (
+        id SERIAL PRIMARY KEY,
+        guild_id VARCHAR(20) NOT NULL,
+        rank_name VARCHAR(100) NOT NULL,
+        role_id VARCHAR(20) NOT NULL,
+        points_required INT NOT NULL,
+        rank_order INT NOT NULL
+      );
+      
+      CREATE TABLE IF NOT EXISTS roblox_groups (
+        id SERIAL PRIMARY KEY,
+        guild_id VARCHAR(20) NOT NULL,
+        group_id BIGINT NOT NULL,
+        api_key TEXT NOT NULL,
+        auto_rank_enabled BOOLEAN DEFAULT TRUE
+      );
+      
+      CREATE TABLE IF NOT EXISTS group_rank_mapping (
+        id SERIAL PRIMARY KEY,
+        roblox_group_id INT NOT NULL,
+        discord_role_id VARCHAR(20) NOT NULL,
+        roblox_rank_id INT NOT NULL
+      );
+      
+      CREATE TABLE IF NOT EXISTS blacklisted_users (
+        id SERIAL PRIMARY KEY,
+        guild_id VARCHAR(20) NOT NULL,
+        roblox_user_id VARCHAR(20) NOT NULL,
+        roblox_username VARCHAR(50) NOT NULL,
+        reason TEXT NOT NULL,
+        blacklisted_at TIMESTAMP DEFAULT NOW()
+      );
+      
       CREATE TABLE IF NOT EXISTS blacklisted_groups (
         id SERIAL PRIMARY KEY,
         guild_id VARCHAR(20) NOT NULL,
@@ -31,6 +104,7 @@ async function ensureTablesExist() {
         reason TEXT NOT NULL,
         blacklisted_at TIMESTAMP DEFAULT NOW()
       );
+      
       CREATE TABLE IF NOT EXISTS warnings (
         id SERIAL PRIMARY KEY,
         guild_id VARCHAR(20) NOT NULL,
@@ -40,15 +114,41 @@ async function ensureTablesExist() {
         timestamp TIMESTAMP DEFAULT NOW(),
         active BOOLEAN DEFAULT TRUE
       );
-      CREATE TABLE IF NOT EXISTS guild_config (
-        guild_id VARCHAR(20) PRIMARY KEY,
-        verified_role_id VARCHAR(20),
-        rank_abbreviation VARCHAR(10)
+      
+      CREATE TABLE IF NOT EXISTS background_checks (
+        id SERIAL PRIMARY KEY,
+        guild_id VARCHAR(20) NOT NULL,
+        user_id VARCHAR(20) NOT NULL,
+        roblox_id VARCHAR(20) NOT NULL,
+        roblox_username VARCHAR(50) NOT NULL,
+        risk_score INT NOT NULL,
+        risk_level VARCHAR(20) NOT NULL,
+        account_age_days INT NOT NULL,
+        has_premium BOOLEAN DEFAULT FALSE,
+        total_badges INT DEFAULT 0,
+        total_friends INT DEFAULT 0,
+        checked_at TIMESTAMP DEFAULT NOW()
+      );
+      
+      CREATE TABLE IF NOT EXISTS xtracker_cache (
+        id SERIAL PRIMARY KEY,
+        roblox_user_id VARCHAR(20) UNIQUE NOT NULL,
+        is_flagged BOOLEAN DEFAULT FALSE,
+        exploit_data JSONB,
+        last_checked TIMESTAMP DEFAULT NOW()
       );
     `);
+    
+    // Insert default free license if not exists
+    await pool.query(`
+      INSERT INTO licenses (license_key, is_active) 
+      VALUES ('RNEX-FREE-2024', true) 
+      ON CONFLICT (license_key) DO NOTHING
+    `);
+    
     console.log('✅ Tables ready!');
   } catch (e) {
-    console.error('Table error:', e);
+    console.error('❌ Table error:', e.message);
   }
 }
 
@@ -83,6 +183,15 @@ async function getRobloxUserInfo(userId) {
 async function getUserGroups(userId) {
   try {
     const res = await axios.get(`https://groups.roblox.com/v2/users/${userId}/groups/roles`);
+    return res.data.data || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function getUserGamePasses(userId) {
+  try {
+    const res = await axios.get(`https://inventory.roblox.com/v1/users/${userId}/assets/collectibles?assetType=GamePass&limit=100`);
     return res.data.data || [];
   } catch (e) {
     return [];
@@ -156,7 +265,7 @@ function getRiskLevel(score) {
 
 async function checkXTracker(robloxId) {
   if (!XTRACKER_API_KEY) {
-    return { flagged: false, confidence: 'no-api-key', reason: 'XTracker API key not set', ownership: [] };
+    return { flagged: false, confidence: 'no-api-key', reason: 'XTracker API key not configured', ownership: [] };
   }
   
   try {
@@ -164,38 +273,46 @@ async function checkXTracker(robloxId) {
     let cheats = [];
     let reason = 'Clean - Not in XTracker database';
     
-    // Check registry
+    // Check registry endpoint
     try {
       const registryRes = await axios.get(`https://api.xtracker.xyz/api/registry/user?id=${robloxId}`, {
         headers: { 'Authorization': XTRACKER_API_KEY },
-        timeout: 5000
+        timeout: 8000
       });
       
-      if (registryRes.data && registryRes.data.flagged) {
+      // If we get a 200 response and data exists
+      if (registryRes.data && registryRes.data.flagged === true) {
         isFlagged = true;
         reason = 'Flagged in XTracker registry';
       }
     } catch (regError) {
-      if (regError.response && regError.response.status !== 404) {
-        console.error('XTracker registry:', regError.message);
+      // 404 means not in database (clean)
+      if (regError.response?.status === 404) {
+        console.log(`✅ XTracker registry: User ${robloxId} not found (clean)`);
+      } else if (regError.response?.status) {
+        console.error(`⚠️ XTracker registry error ${regError.response.status}:`, regError.message);
       }
     }
     
-    // Check ownership
+    // Check ownership endpoint
     try {
       const ownershipRes = await axios.get(`https://api.xtracker.xyz/api/ownership/user?id=${robloxId}`, {
         headers: { 'Authorization': XTRACKER_API_KEY },
-        timeout: 5000
+        timeout: 8000
       });
       
-      if (ownershipRes.data && ownershipRes.data.owns_cheats) {
+      // If user owns cheats
+      if (ownershipRes.data && ownershipRes.data.owns_cheats === true) {
         isFlagged = true;
         cheats = ownershipRes.data.cheats || [];
         reason = `Owns exploits: ${cheats.join(', ')}`;
       }
     } catch (ownError) {
-      if (ownError.response && ownError.response.status !== 404) {
-        console.error('XTracker ownership:', ownError.message);
+      // 404 means no ownership records (clean)
+      if (ownError.response?.status === 404) {
+        console.log(`✅ XTracker ownership: User ${robloxId} has no exploits`);
+      } else if (ownError.response?.status) {
+        console.error(`⚠️ XTracker ownership error ${ownError.response.status}:`, ownError.message);
       }
     }
     
@@ -207,6 +324,7 @@ async function checkXTracker(robloxId) {
     };
     
   } catch (e) {
+    console.error('❌ XTracker general error:', e.message);
     return { 
       flagged: false, 
       confidence: 'error', 
@@ -225,7 +343,7 @@ async function setRobloxGroupRank(groupId, robloxUserId, roleId, apiKey) {
     );
     return true;
   } catch (e) {
-    console.error('Roblox rank error:', e.response?.data || e.message);
+    console.error('❌ Roblox rank error:', e.response?.data || e.message);
     return false;
   }
 }
@@ -237,7 +355,7 @@ async function updateNickname(guild, userId, robloxUsername, abbreviation = null
     await member.setNickname(nickname);
     return true;
   } catch (e) {
-    console.error('Nickname error:', e);
+    console.error('❌ Nickname error:', e.message);
     return false;
   }
 }
@@ -258,7 +376,7 @@ async function giveVerifiedRole(guild, userId) {
     await member.roles.add(verifiedRole);
     return true;
   } catch (e) {
-    console.error('Verified role error:', e);
+    console.error('❌ Verified role error:', e.message);
     return false;
   }
 }
@@ -316,14 +434,14 @@ async function checkAndPromote(guildId, userId, points) {
       }
     }
   } catch (e) {
-    console.error('Auto-promote error:', e);
+    console.error('❌ Auto-promote error:', e.message);
   }
 }
 
 // ============================================
 // BOT READY
 // ============================================
-client.once('clientReady', async () => {
+client.once('ready', async () => {
   console.log(`✅ ${client.user.tag} is online!`);
   await ensureTablesExist();
   
@@ -332,36 +450,70 @@ client.once('clientReady', async () => {
     { name: 'verify', description: 'Verify Roblox account' },
     { name: 'setup', description: 'Setup guide', default_member_permissions: '8' },
     
-    // Config
-    { name: 'setabbreviation', description: 'Set rank prefix (e.g. CD)', default_member_permissions: '8', options: [{ name: 'abbreviation', description: 'Prefix like CD or EX', type: 3, required: true }] },
+    // Config - MERGED setabbreviation into addrank
+    { name: 'addgroup', description: 'Add Roblox group', default_member_permissions: '8', options: [
+      { name: 'group_id', description: 'Roblox group ID', type: 4, required: true }, 
+      { name: 'api_key', description: 'Open Cloud API key', type: 3, required: true }
+    ]},
+    { name: 'maprank', description: 'Map Discord role to Roblox rank', default_member_permissions: '8', options: [
+      { name: 'discord_role', description: 'Discord role', type: 8, required: true }, 
+      { name: 'roblox_rank_id', description: 'Roblox rank ID', type: 4, required: true }
+    ]},
+    { name: 'addrank', description: 'Add points-based rank', default_member_permissions: '8', options: [
+      { name: 'role', description: 'Discord role', type: 8, required: true }, 
+      { name: 'points', description: 'Points required', type: 4, required: true }, 
+      { name: 'name', description: 'Rank name', type: 3, required: true },
+      { name: 'abbreviation', description: 'Prefix (e.g. CD, EX) - sets for entire server', type: 3, required: false }
+    ]},
     { name: 'removeabbreviation', description: 'Remove rank prefix', default_member_permissions: '8' },
-    
-    // Groups
-    { name: 'addgroup', description: 'Add Roblox group', default_member_permissions: '8', options: [{ name: 'group_id', description: 'Roblox group ID', type: 4, required: true }, { name: 'api_key', description: 'Open Cloud API key', type: 3, required: true }] },
-    { name: 'maprank', description: 'Map Discord role to Roblox rank', default_member_permissions: '8', options: [{ name: 'discord_role', description: 'Discord role', type: 8, required: true }, { name: 'roblox_rank_id', description: 'Roblox rank ID', type: 4, required: true }] },
-    { name: 'addrank', description: 'Add points-based rank', default_member_permissions: '8', options: [{ name: 'role', description: 'Discord role', type: 8, required: true }, { name: 'points', description: 'Points required', type: 4, required: true }, { name: 'name', description: 'Rank name', type: 3, required: true }] },
     
     // Points
     { name: 'points', description: 'Check points', options: [{ name: 'user', description: 'Username or @user', type: 3 }] },
-    { name: 'addpoints', description: 'Add points', default_member_permissions: '8', options: [{ name: 'user', description: 'Username or @user', type: 3, required: true }, { name: 'amount', description: 'Amount', type: 4, required: true }, { name: 'reason', description: 'Reason', type: 3 }] },
-    { name: 'removepoints', description: 'Remove points', default_member_permissions: '8', options: [{ name: 'user', description: 'Username or @user', type: 3, required: true }, { name: 'amount', description: 'Amount', type: 4, required: true }] },
+    { name: 'addpoints', description: 'Add points', default_member_permissions: '8', options: [
+      { name: 'user', description: 'Username or @user', type: 3, required: true }, 
+      { name: 'amount', description: 'Amount', type: 4, required: true }, 
+      { name: 'reason', description: 'Reason', type: 3 }
+    ]},
+    { name: 'removepoints', description: 'Remove points', default_member_permissions: '8', options: [
+      { name: 'user', description: 'Username or @user', type: 3, required: true }, 
+      { name: 'amount', description: 'Amount', type: 4, required: true }
+    ]},
     { name: 'leaderboard', description: 'Points leaderboard' },
     
     // Security
     { name: 'bgcheck', description: 'Background check', options: [{ name: 'username', description: 'Roblox username or @user', type: 3, required: true }] },
     
     // Blacklist
-    { name: 'blacklist-user', description: 'Blacklist user', default_member_permissions: '8', options: [{ name: 'roblox_username', description: 'Username', type: 3, required: true }, { name: 'reason', description: 'Reason', type: 3, required: true }] },
-    { name: 'blacklist-group', description: 'Blacklist group', default_member_permissions: '8', options: [{ name: 'group_id', description: 'Group ID', type: 4, required: true }, { name: 'reason', description: 'Reason', type: 3, required: true }] },
-    { name: 'unblacklist-user', description: 'Remove user blacklist', default_member_permissions: '8', options: [{ name: 'roblox_username', description: 'Username', type: 3, required: true }] },
-    { name: 'unblacklist-group', description: 'Remove group blacklist', default_member_permissions: '8', options: [{ name: 'group_id', description: 'Group ID', type: 4, required: true }] },
+    { name: 'blacklist-user', description: 'Blacklist user', default_member_permissions: '8', options: [
+      { name: 'roblox_username', description: 'Username', type: 3, required: true }, 
+      { name: 'reason', description: 'Reason', type: 3, required: true }
+    ]},
+    { name: 'blacklist-group', description: 'Blacklist group', default_member_permissions: '8', options: [
+      { name: 'group_id', description: 'Group ID', type: 4, required: true }, 
+      { name: 'reason', description: 'Reason', type: 3, required: true }
+    ]},
+    { name: 'unblacklist-user', description: 'Remove user blacklist', default_member_permissions: '8', options: [
+      { name: 'roblox_username', description: 'Username', type: 3, required: true }
+    ]},
+    { name: 'unblacklist-group', description: 'Remove group blacklist', default_member_permissions: '8', options: [
+      { name: 'group_id', description: 'Group ID', type: 4, required: true }
+    ]},
     { name: 'viewblacklist', description: 'View blacklists' },
     
     // Moderation
     { name: 'viewwarns', description: 'View warnings', options: [{ name: 'user', description: '@user', type: 6, required: true }] },
-    { name: 'kick', description: 'Kick', default_member_permissions: '2', options: [{ name: 'user', description: '@user', type: 6, required: true }, { name: 'reason', description: 'Reason', type: 3 }] },
-    { name: 'ban', description: 'Ban', default_member_permissions: '4', options: [{ name: 'user', description: '@user', type: 6, required: true }, { name: 'reason', description: 'Reason', type: 3 }] },
-    { name: 'warn', description: 'Warn', default_member_permissions: '8', options: [{ name: 'user', description: '@user', type: 6, required: true }, { name: 'reason', description: 'Reason', type: 3, required: true }] }
+    { name: 'kick', description: 'Kick', default_member_permissions: '2', options: [
+      { name: 'user', description: '@user', type: 6, required: true }, 
+      { name: 'reason', description: 'Reason', type: 3 }
+    ]},
+    { name: 'ban', description: 'Ban', default_member_permissions: '4', options: [
+      { name: 'user', description: '@user', type: 6, required: true }, 
+      { name: 'reason', description: 'Reason', type: 3 }
+    ]},
+    { name: 'warn', description: 'Warn', default_member_permissions: '8', options: [
+      { name: 'user', description: '@user', type: 6, required: true }, 
+      { name: 'reason', description: 'Reason', type: 3, required: true }
+    ]}
   ];
 
   await client.application.commands.set(commands);
@@ -373,9 +525,10 @@ client.once('clientReady', async () => {
 // ============================================
 client.on('interactionCreate', async interaction => {
   if (interaction.isButton()) {
-    if (interaction.customId.startsWith('xtracker_')) {
+    const [action, robloxId] = interaction.customId.split('_');
+    
+    if (action === 'xtracker') {
       await interaction.deferReply({ ephemeral: true });
-      const robloxId = interaction.customId.split('_')[1];
       
       try {
         const result = await checkXTracker(robloxId);
@@ -403,6 +556,86 @@ client.on('interactionCreate', async interaction => {
         return interaction.editReply({ content: `❌ ${e.message}` });
       }
     }
+    
+    if (action === 'groups') {
+      await interaction.deferReply({ ephemeral: true });
+      
+      try {
+        const userGroups = await getUserGroups(robloxId);
+        
+        if (userGroups.length === 0) {
+          return interaction.editReply({ content: '📋 User is not in any groups!' });
+        }
+        
+        const groupList = userGroups.slice(0, 20).map(g => 
+          `• **${g.group.name}** (${g.group.id})\n  Role: ${g.role.name} (Rank ${g.role.rank})`
+        ).join('\n\n');
+        
+        const embed = new EmbedBuilder()
+          .setColor('#0099ff')
+          .setTitle('👥 User Groups')
+          .setDescription(`**Roblox ID:** ${robloxId}\n\n${groupList}`)
+          .setFooter({ text: `Showing ${Math.min(userGroups.length, 20)} of ${userGroups.length} groups` });
+        
+        return interaction.editReply({ embeds: [embed] });
+      } catch (e) {
+        return interaction.editReply({ content: `❌ ${e.message}` });
+      }
+    }
+    
+    if (action === 'gamepasses') {
+      await interaction.deferReply({ ephemeral: true });
+      
+      try {
+        const gamepasses = await getUserGamePasses(robloxId);
+        
+        if (gamepasses.length === 0) {
+          return interaction.editReply({ content: '📋 User has no gamepasses!' });
+        }
+        
+        const gpList = gamepasses.slice(0, 15).map(gp => 
+          `• **${gp.name}** (${gp.assetId})`
+        ).join('\n');
+        
+        const embed = new EmbedBuilder()
+          .setColor('#FFA500')
+          .setTitle('🎫 User GamePasses')
+          .setDescription(`**Roblox ID:** ${robloxId}\n\n${gpList}`)
+          .setFooter({ text: `Showing ${Math.min(gamepasses.length, 15)} of ${gamepasses.length} gamepasses` });
+        
+        return interaction.editReply({ embeds: [embed] });
+      } catch (e) {
+        return interaction.editReply({ content: `❌ ${e.message}` });
+      }
+    }
+    
+    if (action === 'friends') {
+      await interaction.deferReply({ ephemeral: true });
+      
+      try {
+        const friendsRes = await axios.get(`https://friends.roblox.com/v1/users/${robloxId}/friends`);
+        const friends = friendsRes.data.data || [];
+        
+        if (friends.length === 0) {
+          return interaction.editReply({ content: '📋 User has no friends!' });
+        }
+        
+        const friendList = friends.slice(0, 15).map(f => 
+          `• **${f.name}** (${f.id})`
+        ).join('\n');
+        
+        const embed = new EmbedBuilder()
+          .setColor('#9B59B6')
+          .setTitle('👥 Additional Information - Friends')
+          .setDescription(`**Roblox ID:** ${robloxId}\n**Total Friends:** ${friends.length}\n\n${friendList}`)
+          .setFooter({ text: `Showing ${Math.min(friends.length, 15)} of ${friends.length} friends` });
+        
+        return interaction.editReply({ embeds: [embed] });
+      } catch (e) {
+        return interaction.editReply({ content: `❌ ${e.message}` });
+      }
+    }
+    
     return;
   }
 
@@ -415,147 +648,259 @@ client.on('interactionCreate', async interaction => {
     try {
       const licCheck = await pool.query('SELECT * FROM licenses WHERE license_key = $1 AND is_active = true', [license]);
       if (licCheck.rows.length === 0) return interaction.reply({ content: '❌ Invalid license!', ephemeral: true });
+      
       const guildCheck = await pool.query('SELECT * FROM guild_licenses WHERE guild_id = $1', [guildId]);
       if (guildCheck.rows.length > 0) return interaction.reply({ content: '✅ Already activated!', ephemeral: true });
+      
       await pool.query('INSERT INTO guild_licenses (guild_id, license_key) VALUES ($1, $2)', [guildId, license]);
-      return interaction.reply({ embeds: [new EmbedBuilder().setColor('#00FF00').setTitle('✅ Activated!').setDescription('**Next:**\n• `/verify` - Verify Roblox\n• `/setabbreviation CD` - Set rank prefix\n• `/addgroup` - Connect Roblox group\n• `/addrank` - Add point ranks')] });
-    } catch (e) { return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true }); }
+      return interaction.reply({ embeds: [new EmbedBuilder()
+        .setColor('#00FF00')
+        .setTitle('✅ Activated!')
+        .setDescription('**Next steps:**\n• `/verify` - Verify Roblox\n• `/addgroup GROUP_ID API_KEY` - Connect Roblox group\n• `/addrank @Role 100 "Member" CD` - Add rank with prefix')
+      ]});
+    } catch (e) { 
+      return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true }); 
+    }
   }
 
   const activated = await pool.query('SELECT * FROM guild_licenses WHERE guild_id = $1', [guildId]);
   if (activated.rows.length === 0 && commandName !== 'activate') {
-    return interaction.reply({ content: '❌ Not activated!', ephemeral: true });
+    return interaction.reply({ content: '❌ Not activated! Use `/activate RNEX-FREE-2024`', ephemeral: true });
   }
 
   if (commandName === 'verify') {
     const state = `${guildId}_${user.id}_${Date.now()}`;
     pendingVerifications.set(state, { guildId, userId: user.id });
     const authUrl = `https://apis.roblox.com/oauth/v1/authorize?client_id=${ROBLOX_CLIENT_ID}&redirect_uri=${encodeURIComponent(OAUTH_REDIRECT)}&scope=openid%20profile&response_type=code&state=${state}`;
-    const btn = new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('🔗 Verify').setStyle(ButtonStyle.Link).setURL(authUrl));
-    return interaction.reply({ embeds: [new EmbedBuilder().setColor('#0099ff').setTitle('🔐 Verify').setDescription('Click below!')], components: [btn], ephemeral: true });
+    const btn = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel('🔗 Verify with Roblox')
+        .setStyle(ButtonStyle.Link)
+        .setURL(authUrl)
+    );
+    return interaction.reply({ 
+      embeds: [new EmbedBuilder()
+        .setColor('#0099ff')
+        .setTitle('🔐 Verify Your Account')
+        .setDescription('Click the button below to verify with Roblox!')
+      ], 
+      components: [btn], 
+      ephemeral: true 
+    });
   }
 
   if (commandName === 'setup') {
-    return interaction.reply({ embeds: [new EmbedBuilder().setColor('#FFA500').setTitle('⚙️ Setup').addFields(
-      { name: '1️⃣ Get API Key', value: 'Go to create.roblox.com/credentials\nCreate Open Cloud API key\nGive it group-rank permissions' },
-      { name: '2️⃣ Add Group', value: '`/addgroup GROUP_ID API_KEY`' },
-      { name: '3️⃣ Map Ranks', value: '`/maprank @Role ROBLOX_RANK_ID`' },
-      { name: '4️⃣ Add Ranks', value: '`/addrank @Role 100 "Name"`' }
-    )] });
-  }
-
-  if (commandName === 'setabbreviation') {
-    const abbr = options.getString('abbreviation').toUpperCase().substring(0, 10);
-    await pool.query('INSERT INTO guild_config (guild_id, rank_abbreviation) VALUES ($1, $2) ON CONFLICT (guild_id) DO UPDATE SET rank_abbreviation = $2', [guildId, abbr]);
-    return interaction.reply({ content: `✅ Set to **[${abbr}]**\n\nVerified users: **[${abbr}] Username**`, ephemeral: true });
-  }
-
-  if (commandName === 'removeabbreviation') {
-    await pool.query('UPDATE guild_config SET rank_abbreviation = NULL WHERE guild_id = $1', [guildId]);
-    return interaction.reply({ content: '✅ Removed\n\nVerified users: **Username**', ephemeral: true });
-  }
-
-  if (commandName === 'addgroup') {
-    const groupId = options.getInteger('group_id');
-    const apiKey = options.getString('api_key');
-    await pool.query('INSERT INTO roblox_groups (guild_id, group_id, api_key, auto_rank_enabled) VALUES ($1, $2, $3, true)', [guildId, groupId, apiKey]);
-    return interaction.reply({ content: `✅ Added group ${groupId}!\n\nNext: `/maprank` to sync ranks`, ephemeral: true });
-  }
-
-  if (commandName === 'maprank') {
-    const role = options.getRole('discord_role');
-    const robloxRankId = options.getInteger('roblox_rank_id');
-    const group = await pool.query('SELECT id FROM roblox_groups WHERE guild_id = $1 LIMIT 1', [guildId]);
-    if (group.rows.length === 0) return interaction.reply({ content: '❌ No groups! Use `/addgroup` first.', ephemeral: true });
-    await pool.query('INSERT INTO group_rank_mapping (roblox_group_id, discord_role_id, roblox_rank_id) VALUES ($1, $2, $3)', [group.rows[0].id, role.id, robloxRankId]);
-    return interaction.reply({ content: `✅ Mapped ${role} → Roblox rank ${robloxRankId}`, ephemeral: true });
+    return interaction.reply({ embeds: [new EmbedBuilder()
+      .setColor('#FFA500')
+      .setTitle('⚙️ RoNexus Setup Guide')
+      .addFields(
+        { name: '1️⃣ Get Roblox API Key', value: '• Go to: https://create.roblox.com/credentials\n• Create Open Cloud API key\n• Select your group\n• Give it `group.member` permission\n• Copy the key' },
+        { name: '2️⃣ Add Your Group', value: '`/addgroup GROUP_ID YOUR_API_KEY`' },
+        { name: '3️⃣ Map Ranks', value: '`/maprank @DiscordRole ROBLOX_RANK_ID`' },
+        { name: '4️⃣ Add Point Ranks', value: '`/addrank @Role 100 "Member" CD`\n(CD is the prefix like [CD])' },
+        { name: '5️⃣ Verify Members', value: '`/verify` - Members verify Roblox' }
+      )
+    ]});
   }
 
   if (commandName === 'addrank') {
     const role = options.getRole('role');
     const points = options.getInteger('points');
     const name = options.getString('name');
+    const abbreviation = options.getString('abbreviation');
+    
     const order = await pool.query('SELECT COUNT(*) FROM ranks WHERE guild_id = $1', [guildId]);
-    await pool.query('INSERT INTO ranks (guild_id, rank_name, role_id, points_required, rank_order) VALUES ($1, $2, $3, $4, $5)', [guildId, name, role.id, points, parseInt(order.rows[0].count) + 1]);
-    return interaction.reply({ content: `✅ **${name}** (${points} pts) → ${role}\n\nUsers auto-promote at ${points} points!`, ephemeral: true });
+    await pool.query(
+      'INSERT INTO ranks (guild_id, rank_name, role_id, points_required, rank_order) VALUES ($1, $2, $3, $4, $5)', 
+      [guildId, name, role.id, points, parseInt(order.rows[0].count) + 1]
+    );
+    
+    // If abbreviation provided, set it for the entire guild
+    if (abbreviation) {
+      const abbr = abbreviation.toUpperCase().substring(0, 10);
+      await pool.query(
+        'INSERT INTO guild_config (guild_id, rank_abbreviation) VALUES ($1, $2) ON CONFLICT (guild_id) DO UPDATE SET rank_abbreviation = $2', 
+        [guildId, abbr]
+      );
+      return interaction.reply({ 
+        content: `✅ **${name}** (${points} pts) → ${role}\n✅ Prefix set to **[${abbr}]**\n\nVerified users will show as: **[${abbr}] Username**`, 
+        ephemeral: true 
+      });
+    }
+    
+    return interaction.reply({ 
+      content: `✅ **${name}** (${points} pts) → ${role}\n\nUsers auto-promote at ${points} points!`, 
+      ephemeral: true 
+    });
+  }
+
+  if (commandName === 'removeabbreviation') {
+    await pool.query('UPDATE guild_config SET rank_abbreviation = NULL WHERE guild_id = $1', [guildId]);
+    return interaction.reply({ content: '✅ Prefix removed\n\nVerified users will show as: **Username**', ephemeral: true });
+  }
+
+  if (commandName === 'addgroup') {
+    const groupId = options.getInteger('group_id');
+    const apiKey = options.getString('api_key');
+    
+    await pool.query(
+      'INSERT INTO roblox_groups (guild_id, group_id, api_key, auto_rank_enabled) VALUES ($1, $2, $3, true)', 
+      [guildId, groupId, apiKey]
+    );
+    return interaction.reply({ 
+      content: `✅ Added group **${groupId}**!\n\n**Next:** Use \`/maprank @Role ROBLOX_RANK_ID\` to sync Discord roles with Roblox ranks`, 
+      ephemeral: true 
+    });
+  }
+
+  if (commandName === 'maprank') {
+    const role = options.getRole('discord_role');
+    const robloxRankId = options.getInteger('roblox_rank_id');
+    
+    const group = await pool.query('SELECT id FROM roblox_groups WHERE guild_id = $1 LIMIT 1', [guildId]);
+    if (group.rows.length === 0) {
+      return interaction.reply({ content: '❌ No Roblox groups added! Use `/addgroup` first.', ephemeral: true });
+    }
+    
+    await pool.query(
+      'INSERT INTO group_rank_mapping (roblox_group_id, discord_role_id, roblox_rank_id) VALUES ($1, $2, $3)', 
+      [group.rows[0].id, role.id, robloxRankId]
+    );
+    return interaction.reply({ 
+      content: `✅ Mapped ${role} ↔️ Roblox rank **${robloxRankId}**\n\nWhen users get this Discord role, they'll auto-rank in Roblox!`, 
+      ephemeral: true 
+    });
   }
 
   if (commandName === 'points') {
     const input = options.getString('user');
     let targetId = user.id;
+    
     if (input) {
       const mention = input.match(/<@!?(\d+)>/);
-      if (mention) targetId = mention[1];
-      else {
-        const verified = await pool.query('SELECT user_id FROM verified_users WHERE guild_id = $1 AND roblox_username ILIKE $2', [guildId, input]);
+      if (mention) {
+        targetId = mention[1];
+      } else {
+        const verified = await pool.query(
+          'SELECT user_id FROM verified_users WHERE guild_id = $1 AND roblox_username ILIKE $2', 
+          [guildId, input]
+        );
         if (verified.rows.length > 0) targetId = verified.rows[0].user_id;
       }
     }
+    
     const res = await pool.query('SELECT points FROM user_points WHERE guild_id = $1 AND user_id = $2', [guildId, targetId]);
     const pts = res.rows.length > 0 ? res.rows[0].points : 0;
-    return interaction.reply({ embeds: [new EmbedBuilder().setColor('#FFD700').setTitle('💰 Points').setDescription(`<@${targetId}> has **${pts}** points`)] });
+    
+    return interaction.reply({ embeds: [new EmbedBuilder()
+      .setColor('#FFD700')
+      .setTitle('💰 Points')
+      .setDescription(`<@${targetId}> has **${pts}** points`)
+    ]});
   }
 
   if (commandName === 'addpoints') {
     const input = options.getString('user');
     const amount = options.getInteger('amount');
-    const reason = options.getString('reason') || 'No reason';
+    const reason = options.getString('reason') || 'No reason provided';
+    
     let targetId = null;
     const mention = input.match(/<@!?(\d+)>/);
-    if (mention) targetId = mention[1];
-    else {
-      const verified = await pool.query('SELECT user_id FROM verified_users WHERE guild_id = $1 AND roblox_username ILIKE $2', [guildId, input]);
+    if (mention) {
+      targetId = mention[1];
+    } else {
+      const verified = await pool.query(
+        'SELECT user_id FROM verified_users WHERE guild_id = $1 AND roblox_username ILIKE $2', 
+        [guildId, input]
+      );
       if (verified.rows.length > 0) targetId = verified.rows[0].user_id;
     }
-    if (!targetId) return interaction.reply({ content: '❌ Not found!', ephemeral: true });
-    await pool.query('INSERT INTO user_points (guild_id, user_id, points) VALUES ($1, $2, $3) ON CONFLICT (guild_id, user_id) DO UPDATE SET points = user_points.points + $3', [guildId, targetId, amount]);
+    
+    if (!targetId) return interaction.reply({ content: '❌ User not found!', ephemeral: true });
+    
+    await pool.query(
+      'INSERT INTO user_points (guild_id, user_id, points) VALUES ($1, $2, $3) ON CONFLICT (guild_id, user_id) DO UPDATE SET points = user_points.points + $3', 
+      [guildId, targetId, amount]
+    );
+    
     const newPoints = await pool.query('SELECT points FROM user_points WHERE guild_id = $1 AND user_id = $2', [guildId, targetId]);
     await checkAndPromote(guildId, targetId, newPoints.rows[0].points);
-    return interaction.reply({ content: `✅ +${amount} to <@${targetId}>!\n**Reason:** ${reason}\n**Total:** ${newPoints.rows[0].points} points` });
+    
+    return interaction.reply({ 
+      content: `✅ Added **+${amount}** points to <@${targetId}>!\n**Reason:** ${reason}\n**New Total:** ${newPoints.rows[0].points} points` 
+    });
   }
 
   if (commandName === 'removepoints') {
     const input = options.getString('user');
     const amount = options.getInteger('amount');
+    
     let targetId = null;
     const mention = input.match(/<@!?(\d+)>/);
-    if (mention) targetId = mention[1];
-    else {
-      const verified = await pool.query('SELECT user_id FROM verified_users WHERE guild_id = $1 AND roblox_username ILIKE $2', [guildId, input]);
+    if (mention) {
+      targetId = mention[1];
+    } else {
+      const verified = await pool.query(
+        'SELECT user_id FROM verified_users WHERE guild_id = $1 AND roblox_username ILIKE $2', 
+        [guildId, input]
+      );
       if (verified.rows.length > 0) targetId = verified.rows[0].user_id;
     }
-    if (!targetId) return interaction.reply({ content: '❌ Not found!', ephemeral: true });
-    await pool.query('UPDATE user_points SET points = GREATEST(0, points - $1) WHERE guild_id = $2 AND user_id = $3', [amount, guildId, targetId]);
-    return interaction.reply({ content: `✅ -${amount} from <@${targetId}>` });
+    
+    if (!targetId) return interaction.reply({ content: '❌ User not found!', ephemeral: true });
+    
+    await pool.query(
+      'UPDATE user_points SET points = GREATEST(0, points - $1) WHERE guild_id = $2 AND user_id = $3', 
+      [amount, guildId, targetId]
+    );
+    
+    return interaction.reply({ content: `✅ Removed **-${amount}** points from <@${targetId}>` });
   }
 
   if (commandName === 'leaderboard') {
-    const res = await pool.query('SELECT user_id, points FROM user_points WHERE guild_id = $1 ORDER BY points DESC LIMIT 10', [guildId]);
-    if (res.rows.length === 0) return interaction.reply('📋 No data!');
-    const lb = res.rows.map((r, i) => `**${i + 1}.** <@${r.user_id}> - **${r.points}** points`).join('\n');
-    return interaction.reply({ embeds: [new EmbedBuilder().setColor('#FFD700').setTitle('🏆 Leaderboard').setDescription(lb)] });
+    const res = await pool.query(
+      'SELECT user_id, points FROM user_points WHERE guild_id = $1 ORDER BY points DESC LIMIT 10', 
+      [guildId]
+    );
+    
+    if (res.rows.length === 0) return interaction.reply('📋 No points data yet!');
+    
+    const lb = res.rows.map((r, i) => 
+      `**${i + 1}.** <@${r.user_id}> - **${r.points}** points`
+    ).join('\n');
+    
+    return interaction.reply({ embeds: [new EmbedBuilder()
+      .setColor('#FFD700')
+      .setTitle('🏆 Points Leaderboard')
+      .setDescription(lb)
+    ]});
   }
 
   if (commandName === 'bgcheck') {
     await interaction.deferReply();
+    
     const input = options.getString('username');
     let robloxId = null, robloxUsername = null;
+    
     const mention = input.match(/<@!?(\d+)>/);
     if (mention) {
-      const verified = await pool.query('SELECT roblox_id, roblox_username FROM verified_users WHERE guild_id = $1 AND user_id = $2', [guildId, mention[1]]);
-      if (verified.rows.length === 0) return interaction.editReply('❌ Not verified!');
+      const verified = await pool.query(
+        'SELECT roblox_id, roblox_username FROM verified_users WHERE guild_id = $1 AND user_id = $2', 
+        [guildId, mention[1]]
+      );
+      if (verified.rows.length === 0) return interaction.editReply('❌ User not verified!');
       robloxId = verified.rows[0].roblox_id;
       robloxUsername = verified.rows[0].roblox_username;
     } else {
       const lookup = await getRobloxIdFromUsername(input);
-      if (!lookup) return interaction.editReply('❌ Not found!');
+      if (!lookup) return interaction.editReply('❌ Roblox user not found!');
       robloxId = lookup.id;
       robloxUsername = lookup.username;
     }
     
     try {
       const robloxInfo = await getRobloxUserInfo(robloxId);
-      if (!robloxInfo) return interaction.editReply('❌ Error!');
+      if (!robloxInfo) return interaction.editReply('❌ Failed to fetch user info!');
       
       const badgeCount = await getAllBadges(robloxId);
       const friendsRes = await axios.get(`https://friends.roblox.com/v1/users/${robloxId}/friends/count`);
@@ -579,8 +924,10 @@ client.on('interactionCreate', async interaction => {
       const riskScore = calculateRiskScore(accountAgeDays, badgeCount, friendCount, hasVerifiedBadge, hasPremium, inBlacklistedGroup);
       const riskLevel = getRiskLevel(riskScore);
       
-      await pool.query('INSERT INTO background_checks (guild_id, user_id, roblox_id, roblox_username, risk_score, risk_level, account_age_days, has_premium, total_badges, total_friends) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)', 
-        [guildId, mention ? mention[1] : 'manual', robloxId, robloxUsername, riskScore, riskLevel, accountAgeDays, hasPremium, badgeCount, friendCount]);
+      await pool.query(
+        'INSERT INTO background_checks (guild_id, user_id, roblox_id, roblox_username, risk_score, risk_level, account_age_days, has_premium, total_badges, total_friends) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)', 
+        [guildId, mention ? mention[1] : 'manual', robloxId, robloxUsername, riskScore, riskLevel, accountAgeDays, hasPremium, badgeCount, friendCount]
+      );
       
       const riskColor = riskLevel === 'CRITICAL' ? '#FF0000' : riskLevel === 'HIGH' ? '#FFA500' : riskLevel === 'MEDIUM' ? '#FFFF00' : '#00FF00';
       const embed = new EmbedBuilder()
@@ -588,93 +935,134 @@ client.on('interactionCreate', async interaction => {
         .setTitle('🔍 Background Check')
         .setDescription(`**${robloxUsername}** (${robloxId})`)
         .addFields(
-          { name: '⚠️ Risk', value: `${riskLevel} (${riskScore}/10)`, inline: true },
-          { name: '📅 Age', value: `${accountAgeDays}d`, inline: true },
+          { name: '⚠️ Risk Level', value: `${riskLevel} (${riskScore}/10)`, inline: true },
+          { name: '📅 Account Age', value: `${accountAgeDays} days`, inline: true },
           { name: '🎖️ Badges', value: `${badgeCount}`, inline: true },
           { name: '👥 Friends', value: `${friendCount}`, inline: true },
-          { name: '💎 Premium', value: hasPremium ? '✅' : '❌', inline: true },
-          { name: '✅ Verified', value: hasVerifiedBadge ? '✅' : '❌', inline: true },
-          { name: '🔄 Alt', value: `${altCheck.isLikelyAlt ? '🚨 Yes' : '✅ No'}\n${altCheck.reason}`, inline: false }
+          { name: '💎 Premium', value: hasPremium ? '✅ Yes' : '❌ No', inline: true },
+          { name: '✅ Verified Badge', value: hasVerifiedBadge ? '✅ Yes' : '❌ No', inline: true },
+          { name: '🔄 Alt Detection', value: `${altCheck.isLikelyAlt ? '🚨 Likely Alt' : '✅ Normal'}\n${altCheck.reason}`, inline: false }
         );
       
       if (inBlacklistedGroup) {
         const groupList = blacklistedGroups.map(g => `• **${g.group.name}** (${g.group.id})`).join('\n');
-        embed.addFields({ name: '🚨 BLACKLISTED GROUPS', value: groupList });
+        embed.addFields({ name: '🚨 BLACKLISTED GROUPS DETECTED', value: groupList });
       }
       
-      embed.setFooter({ text: '⬇️ Click for XTracker' });
-      const button = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`xtracker_${robloxId}`).setLabel('🔎 XTracker').setStyle(ButtonStyle.Primary));
-      return interaction.editReply({ embeds: [embed], components: [button] });
+      embed.setFooter({ text: 'Click buttons below for more info' });
+      
+      const buttons = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`xtracker_${robloxId}`)
+          .setLabel('🔎 XTracker')
+          .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId(`groups_${robloxId}`)
+          .setLabel('👥 Groups')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`gamepasses_${robloxId}`)
+          .setLabel('🎫 GamePasses')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`friends_${robloxId}`)
+          .setLabel('👥 Friends Info')
+          .setStyle(ButtonStyle.Secondary)
+      );
+      
+      return interaction.editReply({ embeds: [embed], components: [buttons] });
     } catch (e) {
-      return interaction.editReply(`❌ ${e.message}`);
+      console.error('❌ Background check error:', e);
+      return interaction.editReply(`❌ Error: ${e.message}`);
     }
   }
 
   if (commandName === 'blacklist-user') {
     const username = options.getString('roblox_username');
     const reason = options.getString('reason');
+    
     const lookup = await getRobloxIdFromUsername(username);
-    if (!lookup) return interaction.reply({ content: '❌ Not found!', ephemeral: true });
-    await pool.query('INSERT INTO blacklisted_users (guild_id, roblox_user_id, roblox_username, reason) VALUES ($1, $2, $3, $4)', [guildId, lookup.id, lookup.username, reason]);
-    return interaction.reply({ content: `🚫 Blacklisted **${lookup.username}**` });
+    if (!lookup) return interaction.reply({ content: '❌ User not found!', ephemeral: true });
+    
+    await pool.query(
+      'INSERT INTO blacklisted_users (guild_id, roblox_user_id, roblox_username, reason) VALUES ($1, $2, $3, $4)', 
+      [guildId, lookup.id, lookup.username, reason]
+    );
+    return interaction.reply({ content: `🚫 Blacklisted **${lookup.username}**\n**Reason:** ${reason}` });
   }
 
   if (commandName === 'blacklist-group') {
     const groupId = options.getInteger('group_id');
     const reason = options.getString('reason');
+    
     try {
       const groupInfo = await axios.get(`https://groups.roblox.com/v1/groups/${groupId}`);
-      await pool.query('INSERT INTO blacklisted_groups (guild_id, group_id, group_name, reason) VALUES ($1, $2, $3, $4)', [guildId, groupId, groupInfo.data.name, reason]);
-      return interaction.reply({ content: `🚫 Blacklisted **${groupInfo.data.name}** (${groupId})` });
+      await pool.query(
+        'INSERT INTO blacklisted_groups (guild_id, group_id, group_name, reason) VALUES ($1, $2, $3, $4)', 
+        [guildId, groupId, groupInfo.data.name, reason]
+      );
+      return interaction.reply({ content: `🚫 Blacklisted **${groupInfo.data.name}** (${groupId})\n**Reason:** ${reason}` });
     } catch (e) {
-      return interaction.reply({ content: '❌ Invalid!', ephemeral: true });
+      return interaction.reply({ content: '❌ Invalid group ID!', ephemeral: true });
     }
   }
 
   if (commandName === 'unblacklist-user') {
     const username = options.getString('roblox_username');
     const lookup = await getRobloxIdFromUsername(username);
-    if (!lookup) return interaction.reply({ content: '❌ Not found!', ephemeral: true });
+    if (!lookup) return interaction.reply({ content: '❌ User not found!', ephemeral: true });
+    
     await pool.query('DELETE FROM blacklisted_users WHERE guild_id = $1 AND roblox_user_id = $2', [guildId, lookup.id]);
-    return interaction.reply({ content: `✅ Removed **${lookup.username}**` });
+    return interaction.reply({ content: `✅ Removed **${lookup.username}** from blacklist` });
   }
 
   if (commandName === 'unblacklist-group') {
     const groupId = options.getInteger('group_id');
     await pool.query('DELETE FROM blacklisted_groups WHERE guild_id = $1 AND group_id = $2', [guildId, groupId]);
-    return interaction.reply({ content: `✅ Removed ${groupId}` });
+    return interaction.reply({ content: `✅ Removed group **${groupId}** from blacklist` });
   }
 
   if (commandName === 'viewblacklist') {
     const users = await pool.query('SELECT roblox_username, reason FROM blacklisted_users WHERE guild_id = $1 LIMIT 10', [guildId]);
     const groups = await pool.query('SELECT group_name, group_id, reason FROM blacklisted_groups WHERE guild_id = $1 LIMIT 10', [guildId]);
-    const embed = new EmbedBuilder().setTitle('🚫 Blacklist').setColor('#FF0000');
+    
+    const embed = new EmbedBuilder()
+      .setTitle('🚫 Blacklist')
+      .setColor('#FF0000');
     
     if (users.rows.length > 0) {
       const userList = users.rows.map(r => `• **${r.roblox_username}** - ${r.reason}`).join('\n');
-      embed.addFields({ name: 'Users', value: userList });
+      embed.addFields({ name: 'Blacklisted Users', value: userList });
     }
     
     if (groups.rows.length > 0) {
       const groupList = groups.rows.map(r => `• **${r.group_name}** (${r.group_id}) - ${r.reason}`).join('\n');
-      embed.addFields({ name: 'Groups', value: groupList });
+      embed.addFields({ name: 'Blacklisted Groups', value: groupList });
     }
     
     if (users.rows.length === 0 && groups.rows.length === 0) {
-      return interaction.reply('📋 Empty!');
+      return interaction.reply('📋 No blacklisted users or groups!');
     }
     
-    embed.addFields({ name: 'Auto-Blacklisted', value: '• Log4Shell (35367142)\n• qlz (35447047)\n• Chosen Twenty (35163259)\n• C20Ware (35361192)\n• Chosen 20 (14000981)\n• Chosen 20 uniforms (14680340)' });
+    embed.addFields({ 
+      name: 'Auto-Blacklisted Groups', 
+      value: '• Log4Shell (35367142)\n• qlz (35447047)\n• Chosen Twenty (35163259)\n• C20Ware (35361192)\n• Chosen 20 (14000981)\n• Chosen 20 uniforms (14680340)' 
+    });
+    
     return interaction.reply({ embeds: [embed] });
   }
 
   if (commandName === 'viewwarns') {
     const target = options.getUser('user');
+    
     try {
-      const warns = await pool.query('SELECT reason, moderator_id, timestamp FROM warnings WHERE guild_id = $1 AND user_id = $2 AND active = true ORDER BY timestamp DESC LIMIT 10', [guildId, target.id]);
+      const warns = await pool.query(
+        'SELECT reason, moderator_id, timestamp FROM warnings WHERE guild_id = $1 AND user_id = $2 AND active = true ORDER BY timestamp DESC LIMIT 10', 
+        [guildId, target.id]
+      );
       
       if (warns.rows.length === 0) {
-        return interaction.reply({ content: `📋 ${target} has no warnings!`, ephemeral: true });
+        return interaction.reply({ content: `📋 ${target} has no active warnings!`, ephemeral: true });
       }
       
       const warnList = warns.rows.map((w, i) => 
@@ -685,7 +1073,7 @@ client.on('interactionCreate', async interaction => {
         .setColor('#FFA500')
         .setTitle(`⚠️ Warnings for ${target.username}`)
         .setDescription(warnList)
-        .setFooter({ text: `Total: ${warns.rows.length}` });
+        .setFooter({ text: `Total Active Warnings: ${warns.rows.length}` });
       
       return interaction.reply({ embeds: [embed], ephemeral: true });
     } catch (e) {
@@ -695,28 +1083,38 @@ client.on('interactionCreate', async interaction => {
 
   if (commandName === 'kick') {
     const target = options.getUser('user');
-    const reason = options.getString('reason') || 'No reason';
+    const reason = options.getString('reason') || 'No reason provided';
+    
     try {
       const member = await interaction.guild.members.fetch(target.id);
       await member.kick(reason);
       return interaction.reply({ content: `👢 Kicked ${target}\n**Reason:** ${reason}` });
-    } catch (e) { return interaction.reply({ content: '❌ Cannot kick!', ephemeral: true }); }
+    } catch (e) { 
+      return interaction.reply({ content: '❌ Cannot kick this user!', ephemeral: true }); 
+    }
   }
 
   if (commandName === 'ban') {
     const target = options.getUser('user');
-    const reason = options.getString('reason') || 'No reason';
+    const reason = options.getString('reason') || 'No reason provided';
+    
     try {
       await interaction.guild.members.ban(target, { reason });
       return interaction.reply({ content: `🔨 Banned ${target}\n**Reason:** ${reason}` });
-    } catch (e) { return interaction.reply({ content: '❌ Cannot ban!', ephemeral: true }); }
+    } catch (e) { 
+      return interaction.reply({ content: '❌ Cannot ban this user!', ephemeral: true }); 
+    }
   }
 
   if (commandName === 'warn') {
     const target = options.getUser('user');
     const reason = options.getString('reason');
+    
     try {
-      await pool.query('INSERT INTO warnings (guild_id, user_id, moderator_id, reason) VALUES ($1, $2, $3, $4)', [guildId, target.id, user.id, reason]);
+      await pool.query(
+        'INSERT INTO warnings (guild_id, user_id, moderator_id, reason) VALUES ($1, $2, $3, $4)', 
+        [guildId, target.id, user.id, reason]
+      );
       return interaction.reply({ content: `⚠️ Warned ${target}\n**Reason:** ${reason}` });
     } catch (e) {
       return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true });
@@ -724,36 +1122,125 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// OAUTH
+// ============================================
+// OAUTH CALLBACK
+// ============================================
 app.get('/auth/callback', async (req, res) => {
   const { code, state } = req.query;
   const pending = pendingVerifications.get(state);
-  if (!pending) return res.send('❌ Invalid');
+  
+  if (!pending) return res.send('❌ Invalid verification state');
   
   try {
-    const tokenRes = await axios.post('https://apis.roblox.com/oauth/v1/token', `client_id=${ROBLOX_CLIENT_ID}&client_secret=${ROBLOX_CLIENT_SECRET}&grant_type=authorization_code&code=${code}`, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-    const userRes = await axios.get('https://apis.roblox.com/oauth/v1/userinfo', { headers: { Authorization: `Bearer ${tokenRes.data.access_token}` } });
+    const tokenRes = await axios.post(
+      'https://apis.roblox.com/oauth/v1/token', 
+      `client_id=${ROBLOX_CLIENT_ID}&client_secret=${ROBLOX_CLIENT_SECRET}&grant_type=authorization_code&code=${code}`, 
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+    
+    const userRes = await axios.get('https://apis.roblox.com/oauth/v1/userinfo', { 
+      headers: { Authorization: `Bearer ${tokenRes.data.access_token}` } 
+    });
+    
     const { sub: robloxId, preferred_username: robloxUsername } = userRes.data;
     
-    await pool.query('INSERT INTO verified_users (user_id, guild_id, roblox_id, roblox_username) VALUES ($1, $2, $3, $4) ON CONFLICT (guild_id, user_id) DO UPDATE SET roblox_id = $3, roblox_username = $4', [pending.userId, pending.guildId, robloxId, robloxUsername]);
-    await pool.query('INSERT INTO user_points (guild_id, user_id, points) VALUES ($1, $2, 0) ON CONFLICT DO NOTHING', [pending.guildId, pending.userId]);
+    await pool.query(
+      'INSERT INTO verified_users (user_id, guild_id, roblox_id, roblox_username) VALUES ($1, $2, $3, $4) ON CONFLICT (guild_id, user_id) DO UPDATE SET roblox_id = $3, roblox_username = $4', 
+      [pending.userId, pending.guildId, robloxId, robloxUsername]
+    );
+    
+    await pool.query(
+      'INSERT INTO user_points (guild_id, user_id, points) VALUES ($1, $2, 0) ON CONFLICT DO NOTHING', 
+      [pending.guildId, pending.userId]
+    );
     
     const guild = client.guilds.cache.get(pending.guildId);
     if (guild) {
       const configRes = await pool.query('SELECT rank_abbreviation FROM guild_config WHERE guild_id = $1', [pending.guildId]);
       const abbreviation = configRes.rows.length > 0 ? configRes.rows[0].rank_abbreviation : null;
+      
       await updateNickname(guild, pending.userId, robloxUsername, abbreviation);
       await giveVerifiedRole(guild, pending.userId);
     }
     
     pendingVerifications.delete(state);
-    res.send(`<!DOCTYPE html><html><head><title>✅ Verified!</title><style>body{font-family:Arial;text-align:center;padding:50px;background:#2c2f33;color:white}h1{color:#43b581;font-size:48px}</style></head><body><h1>✅ Verified!</h1><p>You're <strong>${robloxUsername}</strong>!</p><p>Nickname updated + Verified role given!</p></body></html>`);
+    
+    res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <title>✅ Verified!</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      padding: 50px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      margin: 0;
+    }
+    h1 {
+      color: #43b581;
+      font-size: 48px;
+      margin: 20px 0;
+    }
+    p {
+      font-size: 18px;
+      line-height: 1.6;
+    }
+    .success {
+      background: rgba(67, 181, 129, 0.2);
+      padding: 20px;
+      border-radius: 10px;
+      margin: 20px auto;
+      max-width: 500px;
+    }
+  </style>
+</head>
+<body>
+  <h1>✅ Verification Successful!</h1>
+  <div class="success">
+    <p><strong>Roblox Username:</strong> ${robloxUsername}</p>
+    <p>Your Discord nickname has been updated!</p>
+    <p>You've been given the Verified role!</p>
+  </div>
+  <p>You can close this page and return to Discord.</p>
+</body>
+</html>`);
   } catch (e) { 
-    res.send(`<!DOCTYPE html><html><head><title>❌ Error</title><style>body{font-family:Arial;text-align:center;padding:50px;background:#2c2f33;color:white}h1{color:#f04747}</style></head><body><h1>❌ Error</h1><p>${e.message}</p></body></html>`);
+    console.error('❌ OAuth error:', e);
+    res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <title>❌ Verification Error</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      padding: 50px;
+      background: #2c2f33;
+      color: white;
+    }
+    h1 {
+      color: #f04747;
+    }
+  </style>
+</head>
+<body>
+  <h1>❌ Verification Failed</h1>
+  <p>${e.message}</p>
+  <p>Please try again or contact support.</p>
+</body>
+</html>`);
   }
 });
 
-app.get('/', (req, res) => res.send('🤖 RoNexus!'));
-app.listen(PORT, () => console.log(`🌐 Port ${PORT}`));
-setInterval(() => console.log('🔄'), 300000);
+app.get('/', (req, res) => res.send('🤖 RoNexus Bot Online!'));
+
+app.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
+
+// Keep-alive ping
+setInterval(() => {
+  console.log('🔄 Keep-alive ping');
+}, 300000);
+
 client.login(process.env.DISCORD_TOKEN);
