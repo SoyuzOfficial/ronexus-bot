@@ -45,6 +45,17 @@ async function ensureTablesExist() {
         rank_abbreviation VARCHAR(10)
       );
       
+      -- Ensure rank_abbreviation column exists (for existing databases)
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name='guild_config' AND column_name='rank_abbreviation'
+        ) THEN
+          ALTER TABLE guild_config ADD COLUMN rank_abbreviation VARCHAR(10);
+        END IF;
+      END $$;
+      
       CREATE TABLE IF NOT EXISTS verified_users (
         id SERIAL PRIMARY KEY,
         user_id VARCHAR(20) NOT NULL,
@@ -191,10 +202,19 @@ async function getUserGroups(userId) {
 
 async function getUserGamePasses(userId) {
   try {
-    const res = await axios.get(`https://inventory.roblox.com/v1/users/${userId}/assets/collectibles?assetType=GamePass&limit=100`);
+    // Try to get game passes from user's inventory
+    // Note: This endpoint might require authentication in some cases
+    const res = await axios.get(`https://inventory.roblox.com/v1/users/${userId}/items/GamePass?limit=100&sortOrder=Desc`);
     return res.data.data || [];
   } catch (e) {
-    return [];
+    // If that fails, try the games API to see what games they've created/own
+    try {
+      const gamesRes = await axios.get(`https://games.roblox.com/v2/users/${userId}/games?limit=50`);
+      return gamesRes.data.data || [];
+    } catch (e2) {
+      console.error('GamePass API error:', e2.message);
+      return [];
+    }
   }
 }
 
@@ -590,22 +610,35 @@ client.on('interactionCreate', async interaction => {
         const gamepasses = await getUserGamePasses(robloxId);
         
         if (gamepasses.length === 0) {
-          return interaction.editReply({ content: '📋 User has no gamepasses!' });
+          return interaction.editReply({ content: '📋 No gamepasses or games found for this user!' });
         }
         
-        const gpList = gamepasses.slice(0, 15).map(gp => 
-          `• **${gp.name}** (${gp.assetId})`
-        ).join('\n');
+        // Check if it's gamepasses or games data
+        const isGames = gamepasses[0] && gamepasses[0].name && !gamepasses[0].assetId;
+        
+        let gpList;
+        if (isGames) {
+          // It's games data
+          gpList = gamepasses.slice(0, 20).map(gp => 
+            `• **${gp.name}**\n   Place ID: ${gp.id || 'N/A'}`
+          ).join('\n');
+        } else {
+          // It's gamepasses data
+          gpList = gamepasses.slice(0, 20).map(gp => 
+            `• **${gp.name}** (${gp.assetId || gp.id})`
+          ).join('\n');
+        }
         
         const embed = new EmbedBuilder()
           .setColor('#FFA500')
-          .setTitle('🎫 User GamePasses')
-          .setDescription(`**Roblox ID:** ${robloxId}\n\n${gpList}`)
-          .setFooter({ text: `Showing ${Math.min(gamepasses.length, 15)} of ${gamepasses.length} gamepasses` });
+          .setTitle(isGames ? '🎮 User Games' : '🎫 User GamePasses')
+          .setDescription(`**Roblox ID:** ${robloxId}\n**Total:** ${gamepasses.length}\n\n${gpList}`)
+          .setFooter({ text: `Showing ${Math.min(gamepasses.length, 20)} of ${gamepasses.length} items` });
         
         return interaction.editReply({ embeds: [embed] });
       } catch (e) {
-        return interaction.editReply({ content: `❌ ${e.message}` });
+        console.error('GamePasses error:', e);
+        return interaction.editReply({ content: `❌ Unable to fetch gamepasses/games data` });
       }
     }
     
@@ -613,22 +646,81 @@ client.on('interactionCreate', async interaction => {
       await interaction.deferReply({ ephemeral: true });
       
       try {
-        const friendsRes = await axios.get(`https://friends.roblox.com/v1/users/${robloxId}/friends`);
-        const friends = friendsRes.data.data || [];
+        // Get friends with pagination up to 1000
+        let allFriends = [];
+        let cursor = '';
         
-        if (friends.length === 0) {
+        while (allFriends.length < 1000) {
+          const url = cursor 
+            ? `https://friends.roblox.com/v1/users/${robloxId}/friends?cursor=${cursor}`
+            : `https://friends.roblox.com/v1/users/${robloxId}/friends`;
+          
+          const friendsRes = await axios.get(url);
+          const friends = friendsRes.data.data || [];
+          
+          allFriends = allFriends.concat(friends);
+          
+          if (!friendsRes.data.nextPageCursor || friends.length === 0) break;
+          cursor = friendsRes.data.nextPageCursor;
+        }
+        
+        if (allFriends.length === 0) {
           return interaction.editReply({ content: '📋 User has no friends!' });
         }
         
-        const friendList = friends.slice(0, 15).map(f => 
+        // Show first 50 friends with total count
+        const friendList = allFriends.slice(0, 50).map(f => 
           `• **${f.name}** (${f.id})`
         ).join('\n');
         
         const embed = new EmbedBuilder()
           .setColor('#9B59B6')
           .setTitle('👥 Additional Information - Friends')
-          .setDescription(`**Roblox ID:** ${robloxId}\n**Total Friends:** ${friends.length}\n\n${friendList}`)
-          .setFooter({ text: `Showing ${Math.min(friends.length, 15)} of ${friends.length} friends` });
+          .setDescription(`**Roblox ID:** ${robloxId}\n**Total Friends:** ${allFriends.length}\n\n${friendList}`)
+          .setFooter({ text: `Showing 50 of ${allFriends.length} friends (Max: 1000)` });
+        
+        return interaction.editReply({ embeds: [embed] });
+      } catch (e) {
+        return interaction.editReply({ content: `❌ ${e.message}` });
+      }
+    }
+    
+    if (action === 'badges') {
+      await interaction.deferReply({ ephemeral: true });
+      
+      try {
+        // Get all badges with pagination up to 10,000
+        let allBadges = [];
+        let cursor = '';
+        
+        while (allBadges.length < 10000) {
+          const url = cursor 
+            ? `https://badges.roblox.com/v1/users/${robloxId}/badges?limit=100&cursor=${cursor}`
+            : `https://badges.roblox.com/v1/users/${robloxId}/badges?limit=100`;
+          
+          const res = await axios.get(url);
+          const badges = res.data.data || [];
+          
+          allBadges = allBadges.concat(badges);
+          
+          if (!res.data.nextPageCursor || badges.length === 0) break;
+          cursor = res.data.nextPageCursor;
+        }
+        
+        if (allBadges.length === 0) {
+          return interaction.editReply({ content: '📋 User has no badges!' });
+        }
+        
+        // Show first 100 badges in a scrollable list
+        const badgeList = allBadges.slice(0, 100).map((b, i) => 
+          `${i + 1}. **${b.name}**\n   From: ${b.displayName || 'Unknown Game'}`
+        ).join('\n');
+        
+        const embed = new EmbedBuilder()
+          .setColor('#FFD700')
+          .setTitle('🎖️ User Badges')
+          .setDescription(`**Roblox ID:** ${robloxId}\n**Total Badges:** ${allBadges.length}\n\n${badgeList}`)
+          .setFooter({ text: `Showing 100 of ${allBadges.length} badges (Max: 10,000)` });
         
         return interaction.editReply({ embeds: [embed] });
       } catch (e) {
@@ -965,8 +1057,12 @@ client.on('interactionCreate', async interaction => {
           .setLabel('🎫 GamePasses')
           .setStyle(ButtonStyle.Primary),
         new ButtonBuilder()
+          .setCustomId(`badges_${robloxId}`)
+          .setLabel('🎖️ Badges')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
           .setCustomId(`friends_${robloxId}`)
-          .setLabel('👥 Friends Info')
+          .setLabel('👥 Friends')
           .setStyle(ButtonStyle.Secondary)
       );
       
@@ -1156,8 +1252,17 @@ app.get('/auth/callback', async (req, res) => {
     
     const guild = client.guilds.cache.get(pending.guildId);
     if (guild) {
+      // Ensure guild_config row exists first
+      await pool.query(
+        'INSERT INTO guild_config (guild_id) VALUES ($1) ON CONFLICT (guild_id) DO NOTHING',
+        [pending.guildId]
+      );
+      
+      // Get the rank abbreviation
       const configRes = await pool.query('SELECT rank_abbreviation FROM guild_config WHERE guild_id = $1', [pending.guildId]);
-      const abbreviation = configRes.rows.length > 0 ? configRes.rows[0].rank_abbreviation : null;
+      const abbreviation = configRes.rows.length > 0 && configRes.rows[0].rank_abbreviation 
+        ? configRes.rows[0].rank_abbreviation 
+        : null;
       
       await updateNickname(guild, pending.userId, robloxUsername, abbreviation);
       await giveVerifiedRole(guild, pending.userId);
