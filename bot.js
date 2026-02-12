@@ -200,21 +200,40 @@ async function getUserGroups(userId) {
   }
 }
 
-async function getUserGamePasses(userId) {
+async function getUserGames(userId) {
   try {
-    // Try to get game passes from user's inventory
-    // Note: This endpoint might require authentication in some cases
-    const res = await axios.get(`https://inventory.roblox.com/v1/users/${userId}/items/GamePass?limit=100&sortOrder=Desc`);
+    const res = await axios.get(`https://games.roblox.com/v2/users/${userId}/games?limit=50&sortOrder=Desc`);
     return res.data.data || [];
   } catch (e) {
-    // If that fails, try the games API to see what games they've created/own
-    try {
-      const gamesRes = await axios.get(`https://games.roblox.com/v2/users/${userId}/games?limit=50`);
-      return gamesRes.data.data || [];
-    } catch (e2) {
-      console.error('GamePass API error:', e2.message);
-      return [];
+    console.error('Games API error:', e.message);
+    return [];
+  }
+}
+
+async function getUserGamePasses(userId) {
+  try {
+    // Get user's game passes from inventory
+    let allPasses = [];
+    let cursor = '';
+    
+    while (allPasses.length < 100) {
+      const url = cursor 
+        ? `https://inventory.roblox.com/v1/users/${userId}/items/GamePass?limit=100&cursor=${cursor}`
+        : `https://inventory.roblox.com/v1/users/${userId}/items/GamePass?limit=100`;
+      
+      const res = await axios.get(url);
+      const passes = res.data.data || [];
+      
+      allPasses = allPasses.concat(passes);
+      
+      if (!res.data.nextPageCursor || passes.length === 0) break;
+      cursor = res.data.nextPageCursor;
     }
+    
+    return allPasses;
+  } catch (e) {
+    console.error('GamePasses API error:', e.message);
+    return [];
   }
 }
 
@@ -234,7 +253,7 @@ async function getAllBadges(userId) {
       if (!res.data.nextPageCursor) break;
       cursor = res.data.nextPageCursor;
       
-      if (allBadges.length > 5000000000) break;
+      if (allBadges.length > 5000) break;
     }
     
     return allBadges.length;
@@ -284,7 +303,8 @@ function getRiskLevel(score) {
 }
 
 async function checkXTracker(robloxId) {
-    let XTRACKER_API_KEY= "A-icVR0g6qaEi1EgTYd-TQ"
+  let XTRACKER_API_KEY = process.env.XTRACKER_API_KEY || "A-icVR0g6qaEi1EgTYd-TQ";
+  
   if (!XTRACKER_API_KEY) {
     return { flagged: false, confidence: 'no-api-key', reason: 'XTracker API key not set', ownership: [] };
   }
@@ -346,7 +366,6 @@ async function checkXTracker(robloxId) {
     };
   }
 }
-
 
 async function setRobloxGroupRank(groupId, robloxUserId, roleId, apiKey) {
   try {
@@ -539,7 +558,10 @@ client.once('ready', async () => {
 // ============================================
 client.on('interactionCreate', async interaction => {
   if (interaction.isButton()) {
-    const [action, robloxId] = interaction.customId.split('_');
+    const parts = interaction.customId.split('_');
+    const action = parts[0];
+    const robloxId = parts[1];
+    const page = parseInt(parts[2] || '0');
     
     if (action === 'xtracker') {
       await interaction.deferReply({ ephemeral: true });
@@ -581,19 +603,98 @@ client.on('interactionCreate', async interaction => {
           return interaction.editReply({ content: '📋 User is not in any groups!' });
         }
         
-        const groupList = userGroups.slice(0, 20).map(g => 
-          `• **${g.group.name}** (${g.group.id})\n  Role: ${g.role.name} (Rank ${g.role.rank})`
+        const itemsPerPage = 15;
+        const totalPages = Math.ceil(userGroups.length / itemsPerPage);
+        const start = page * itemsPerPage;
+        const end = start + itemsPerPage;
+        
+        const groupList = userGroups.slice(start, end).map((g, i) => 
+          `${start + i + 1}. **${g.group.name}** (${g.group.id})\n   Role: ${g.role.name} (Rank ${g.role.rank})`
         ).join('\n\n');
         
         const embed = new EmbedBuilder()
           .setColor('#0099ff')
           .setTitle('👥 User Groups')
           .setDescription(`**Roblox ID:** ${robloxId}\n\n${groupList}`)
-          .setFooter({ text: `Showing ${Math.min(userGroups.length, 20)} of ${userGroups.length} groups` });
+          .setFooter({ text: `Showing ${start + 1}-${Math.min(end, userGroups.length)} of ${userGroups.length} groups | Page ${page + 1}/${totalPages}` });
         
-        return interaction.editReply({ embeds: [embed] });
+        const buttons = new ActionRowBuilder();
+        if (page > 0) {
+          buttons.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`groups_${robloxId}_${page - 1}`)
+              .setLabel('◀ Back')
+              .setStyle(ButtonStyle.Secondary)
+          );
+        }
+        if (end < userGroups.length) {
+          buttons.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`groups_${robloxId}_${page + 1}`)
+              .setLabel('Next ▶')
+              .setStyle(ButtonStyle.Primary)
+          );
+        }
+        
+        return interaction.editReply({ 
+          embeds: [embed], 
+          components: buttons.components.length > 0 ? [buttons] : [] 
+        });
       } catch (e) {
         return interaction.editReply({ content: `❌ ${e.message}` });
+      }
+    }
+    
+    if (action === 'games') {
+      await interaction.deferReply({ ephemeral: true });
+      
+      try {
+        const games = await getUserGames(robloxId);
+        
+        if (games.length === 0) {
+          return interaction.editReply({ content: '📋 User has not created any games!' });
+        }
+        
+        const itemsPerPage = 15;
+        const totalPages = Math.ceil(games.length / itemsPerPage);
+        const start = page * itemsPerPage;
+        const end = start + itemsPerPage;
+        
+        const gameList = games.slice(start, end).map((g, i) => 
+          `${start + i + 1}. **${g.name}**\n   Place ID: ${g.id} | Visits: ${g.placeVisits || 0}`
+        ).join('\n\n');
+        
+        const embed = new EmbedBuilder()
+          .setColor('#FFA500')
+          .setTitle('🎮 User Created Games')
+          .setDescription(`**Roblox ID:** ${robloxId}\n\n${gameList}`)
+          .setFooter({ text: `Showing ${start + 1}-${Math.min(end, games.length)} of ${games.length} games | Page ${page + 1}/${totalPages}` });
+        
+        const buttons = new ActionRowBuilder();
+        if (page > 0) {
+          buttons.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`games_${robloxId}_${page - 1}`)
+              .setLabel('◀ Back')
+              .setStyle(ButtonStyle.Secondary)
+          );
+        }
+        if (end < games.length) {
+          buttons.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`games_${robloxId}_${page + 1}`)
+              .setLabel('Next ▶')
+              .setStyle(ButtonStyle.Primary)
+          );
+        }
+        
+        return interaction.editReply({ 
+          embeds: [embed], 
+          components: buttons.components.length > 0 ? [buttons] : [] 
+        });
+      } catch (e) {
+        console.error('Games error:', e);
+        return interaction.editReply({ content: `❌ Unable to fetch games data` });
       }
     }
     
@@ -604,35 +705,49 @@ client.on('interactionCreate', async interaction => {
         const gamepasses = await getUserGamePasses(robloxId);
         
         if (gamepasses.length === 0) {
-          return interaction.editReply({ content: '📋 No gamepasses or games found for this user!' });
+          return interaction.editReply({ content: '📋 User has no gamepasses!' });
         }
         
-        // Check if it's gamepasses or games data
-        const isGames = gamepasses[0] && gamepasses[0].name && !gamepasses[0].assetId;
+        const itemsPerPage = 15;
+        const totalPages = Math.ceil(gamepasses.length / itemsPerPage);
+        const start = page * itemsPerPage;
+        const end = start + itemsPerPage;
         
-        let gpList;
-        if (isGames) {
-          // It's games data
-          gpList = gamepasses.slice(0, 20).map(gp => 
-            `• **${gp.name}**\n   Place ID: ${gp.id || 'N/A'}`
-          ).join('\n');
-        } else {
-          // It's gamepasses data
-          gpList = gamepasses.slice(0, 20).map(gp => 
-            `• **${gp.name}** (${gp.assetId || gp.id})`
-          ).join('\n');
-        }
+        const gpList = gamepasses.slice(start, end).map((gp, i) => 
+          `${start + i + 1}. **${gp.name}**\n   ID: ${gp.assetId || gp.id}`
+        ).join('\n\n');
         
         const embed = new EmbedBuilder()
-          .setColor('#FFA500')
-          .setTitle(isGames ? '🎮 User Games' : '🎫 User GamePasses')
-          .setDescription(`**Roblox ID:** ${robloxId}\n**Total:** ${gamepasses.length}\n\n${gpList}`)
-          .setFooter({ text: `Showing ${Math.min(gamepasses.length, 20)} of ${gamepasses.length} items` });
+          .setColor('#FF69B4')
+          .setTitle('🎫 User GamePasses')
+          .setDescription(`**Roblox ID:** ${robloxId}\n\n${gpList}`)
+          .setFooter({ text: `Showing ${start + 1}-${Math.min(end, gamepasses.length)} of ${gamepasses.length} gamepasses | Page ${page + 1}/${totalPages}` });
         
-        return interaction.editReply({ embeds: [embed] });
+        const buttons = new ActionRowBuilder();
+        if (page > 0) {
+          buttons.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`gamepasses_${robloxId}_${page - 1}`)
+              .setLabel('◀ Back')
+              .setStyle(ButtonStyle.Secondary)
+          );
+        }
+        if (end < gamepasses.length) {
+          buttons.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`gamepasses_${robloxId}_${page + 1}`)
+              .setLabel('Next ▶')
+              .setStyle(ButtonStyle.Primary)
+          );
+        }
+        
+        return interaction.editReply({ 
+          embeds: [embed], 
+          components: buttons.components.length > 0 ? [buttons] : [] 
+        });
       } catch (e) {
         console.error('GamePasses error:', e);
-        return interaction.editReply({ content: `❌ Unable to fetch gamepasses/games data` });
+        return interaction.editReply({ content: `❌ Unable to fetch gamepasses` });
       }
     }
     
@@ -662,18 +777,43 @@ client.on('interactionCreate', async interaction => {
           return interaction.editReply({ content: '📋 User has no friends!' });
         }
         
-        // Show first 50 friends with total count
-        const friendList = allFriends.slice(0, 50).map(f => 
-          `• **${f.name}** (${f.id})`
+        const itemsPerPage = 15;
+        const totalPages = Math.ceil(allFriends.length / itemsPerPage);
+        const start = page * itemsPerPage;
+        const end = start + itemsPerPage;
+        
+        const friendList = allFriends.slice(start, end).map((f, i) => 
+          `${start + i + 1}. **${f.name}** (${f.id})`
         ).join('\n');
         
         const embed = new EmbedBuilder()
           .setColor('#9B59B6')
           .setTitle('👥 Additional Information - Friends')
           .setDescription(`**Roblox ID:** ${robloxId}\n**Total Friends:** ${allFriends.length}\n\n${friendList}`)
-          .setFooter({ text: `Showing 50 of ${allFriends.length} friends (Max: 1000)` });
+          .setFooter({ text: `Showing ${start + 1}-${Math.min(end, allFriends.length)} of ${allFriends.length} friends (Max: 1000) | Page ${page + 1}/${totalPages}` });
         
-        return interaction.editReply({ embeds: [embed] });
+        const buttons = new ActionRowBuilder();
+        if (page > 0) {
+          buttons.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`friends_${robloxId}_${page - 1}`)
+              .setLabel('◀ Back')
+              .setStyle(ButtonStyle.Secondary)
+          );
+        }
+        if (end < allFriends.length) {
+          buttons.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`friends_${robloxId}_${page + 1}`)
+              .setLabel('Next ▶')
+              .setStyle(ButtonStyle.Primary)
+          );
+        }
+        
+        return interaction.editReply({ 
+          embeds: [embed], 
+          components: buttons.components.length > 0 ? [buttons] : [] 
+        });
       } catch (e) {
         return interaction.editReply({ content: `❌ ${e.message}` });
       }
@@ -705,18 +845,43 @@ client.on('interactionCreate', async interaction => {
           return interaction.editReply({ content: '📋 User has no badges!' });
         }
         
-        // Show first 100 badges in a scrollable list
-        const badgeList = allBadges.slice(0, 100).map((b, i) => 
-          `${i + 1}. **${b.name}**\n   From: ${b.displayName || 'Unknown Game'}`
-        ).join('\n');
+        const itemsPerPage = 15;
+        const totalPages = Math.ceil(allBadges.length / itemsPerPage);
+        const start = page * itemsPerPage;
+        const end = start + itemsPerPage;
+        
+        const badgeList = allBadges.slice(start, end).map((b, i) => 
+          `${start + i + 1}. **${b.name}**\n   From: ${b.displayName || 'Unknown Game'}`
+        ).join('\n\n');
         
         const embed = new EmbedBuilder()
           .setColor('#FFD700')
           .setTitle('🎖️ User Badges')
           .setDescription(`**Roblox ID:** ${robloxId}\n**Total Badges:** ${allBadges.length}\n\n${badgeList}`)
-          .setFooter({ text: `Showing 100 of ${allBadges.length} badges (Max: 10,000)` });
+          .setFooter({ text: `Showing ${start + 1}-${Math.min(end, allBadges.length)} of ${allBadges.length} badges (Max: 10,000) | Page ${page + 1}/${totalPages}` });
         
-        return interaction.editReply({ embeds: [embed] });
+        const buttons = new ActionRowBuilder();
+        if (page > 0) {
+          buttons.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`badges_${robloxId}_${page - 1}`)
+              .setLabel('◀ Back')
+              .setStyle(ButtonStyle.Secondary)
+          );
+        }
+        if (end < allBadges.length) {
+          buttons.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`badges_${robloxId}_${page + 1}`)
+              .setLabel('Next ▶')
+              .setStyle(ButtonStyle.Primary)
+          );
+        }
+        
+        return interaction.editReply({ 
+          embeds: [embed], 
+          components: buttons.components.length > 0 ? [buttons] : [] 
+        });
       } catch (e) {
         return interaction.editReply({ content: `❌ ${e.message}` });
       }
@@ -1039,28 +1204,35 @@ client.on('interactionCreate', async interaction => {
       
       const buttons = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId(`xtracker_${robloxId}`)
+          .setCustomId(`xtracker_${robloxId}_0`)
           .setLabel('🔎 XTracker')
           .setStyle(ButtonStyle.Danger),
         new ButtonBuilder()
-          .setCustomId(`groups_${robloxId}`)
+          .setCustomId(`groups_${robloxId}_0`)
           .setLabel('👥 Groups')
           .setStyle(ButtonStyle.Primary),
         new ButtonBuilder()
-          .setCustomId(`gamepasses_${robloxId}`)
+          .setCustomId(`games_${robloxId}_0`)
+          .setLabel('🎮 Games')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`gamepasses_${robloxId}_0`)
           .setLabel('🎫 GamePasses')
           .setStyle(ButtonStyle.Primary),
         new ButtonBuilder()
-          .setCustomId(`badges_${robloxId}`)
+          .setCustomId(`badges_${robloxId}_0`)
           .setLabel('🎖️ Badges')
-          .setStyle(ButtonStyle.Success),
+          .setStyle(ButtonStyle.Success)
+      );
+      
+      const buttons2 = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId(`friends_${robloxId}`)
+          .setCustomId(`friends_${robloxId}_0`)
           .setLabel('👥 Friends')
           .setStyle(ButtonStyle.Secondary)
       );
       
-      return interaction.editReply({ embeds: [embed], components: [buttons] });
+      return interaction.editReply({ embeds: [embed], components: [buttons, buttons2] });
     } catch (e) {
       console.error('❌ Background check error:', e);
       return interaction.editReply(`❌ Error: ${e.message}`);
@@ -1269,40 +1441,130 @@ app.get('/auth/callback', async (req, res) => {
 <head>
   <title>✅ Verified!</title>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      text-align: center;
-      padding: 50px;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
+    * {
       margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
+      animation: gradientShift 15s ease infinite;
+      background-size: 400% 400%;
+      color: white;
+    }
+    @keyframes gradientShift {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+    .container {
+      text-align: center;
+      padding: 60px 40px;
+      max-width: 600px;
+    }
+    .checkmark {
+      width: 100px;
+      height: 100px;
+      border-radius: 50%;
+      background: rgba(67, 181, 129, 0.3);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 30px;
+      animation: scaleIn 0.5s ease-out;
+    }
+    @keyframes scaleIn {
+      from {
+        transform: scale(0);
+        opacity: 0;
+      }
+      to {
+        transform: scale(1);
+        opacity: 1;
+      }
+    }
+    .checkmark svg {
+      width: 60px;
+      height: 60px;
+      stroke: #43b581;
+      stroke-width: 3;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      animation: draw 0.8s ease-out 0.3s forwards;
+      stroke-dasharray: 100;
+      stroke-dashoffset: 100;
+    }
+    @keyframes draw {
+      to {
+        stroke-dashoffset: 0;
+      }
     }
     h1 {
-      color: #43b581;
       font-size: 48px;
-      margin: 20px 0;
+      margin-bottom: 20px;
+      font-weight: 700;
+      text-shadow: 0 2px 10px rgba(0,0,0,0.3);
     }
-    p {
-      font-size: 18px;
-      line-height: 1.6;
+    .success-box {
+      background: rgba(255, 255, 255, 0.15);
+      backdrop-filter: blur(10px);
+      padding: 30px;
+      border-radius: 20px;
+      margin: 30px 0;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
     }
-    .success {
-      background: rgba(67, 181, 129, 0.2);
-      padding: 20px;
-      border-radius: 10px;
-      margin: 20px auto;
-      max-width: 500px;
+    .username {
+      font-size: 28px;
+      font-weight: 600;
+      color: #fff;
+      margin: 15px 0;
+    }
+    .detail {
+      font-size: 16px;
+      line-height: 1.8;
+      margin: 10px 0;
+      opacity: 0.95;
+    }
+    .detail strong {
+      color: #fff;
+      font-weight: 600;
+    }
+    .footer {
+      margin-top: 30px;
+      font-size: 14px;
+      opacity: 0.8;
+    }
+    .emoji {
+      font-size: 24px;
+      margin-right: 8px;
     }
   </style>
 </head>
 <body>
-  <h1>✅ Verification Successful!</h1>
-  <div class="success">
-    <p><strong>Roblox Username:</strong> ${robloxUsername}</p>
-    <p>Your Discord nickname has been updated!</p>
-    <p>You've been given the Verified role!</p>
+  <div class="container">
+    <div class="checkmark">
+      <svg viewBox="0 0 52 52">
+        <path d="M14 27l7 7 16-16"/>
+      </svg>
+    </div>
+    <h1>Verification Successful!</h1>
+    <div class="success-box">
+      <div class="username"><span class="emoji">🎮</span>${robloxUsername}</div>
+      <div class="detail"><strong>✅ Discord Nickname Updated</strong></div>
+      <div class="detail"><strong>🎭 Verified Role Granted</strong></div>
+      <div class="detail"><strong>🔗 Account Linked</strong></div>
+    </div>
+    <div class="footer">
+      You can now close this page and return to Discord
+    </div>
   </div>
-  <p>You can close this page and return to Discord.</p>
 </body>
 </html>`);
   } catch (e) { 
