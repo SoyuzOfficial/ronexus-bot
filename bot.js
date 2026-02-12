@@ -284,8 +284,9 @@ function getRiskLevel(score) {
 }
 
 async function checkXTracker(robloxId) {
+    let XTRACKER_API_KEY= "A-icVR0g6qaEi1EgTYd-TQ"
   if (!XTRACKER_API_KEY) {
-    return { flagged: false, confidence: 'no-api-key', reason: 'XTracker API key not configured', ownership: [] };
+    return { flagged: false, confidence: 'no-api-key', reason: 'XTracker API key not set', ownership: [] };
   }
   
   try {
@@ -293,46 +294,39 @@ async function checkXTracker(robloxId) {
     let cheats = [];
     let reason = 'Clean - Not in XTracker database';
     
-    // Check registry endpoint
+    // Check registry
     try {
       const registryRes = await axios.get(`https://api.xtracker.xyz/api/registry/user?id=${robloxId}`, {
         headers: { 'Authorization': XTRACKER_API_KEY },
-        timeout: 8000
+        timeout: 5000
       });
       
-      // If we get a 200 response and data exists
-      if (registryRes.data && registryRes.data.flagged === true) {
+      if (registryRes.data && registryRes.data.evidence && registryRes.data.evidence.length > 0) {
         isFlagged = true;
-        reason = 'Flagged in XTracker registry';
+        const evidenceReasons = registryRes.data.evidence.map(e => e.reason).join(', ');
+        reason = `Flagged in XTracker registry - Evidence: ${evidenceReasons}`;
       }
     } catch (regError) {
-      // 404 means not in database (clean)
-      if (regError.response?.status === 404) {
-        console.log(`✅ XTracker registry: User ${robloxId} not found (clean)`);
-      } else if (regError.response?.status) {
-        console.error(`⚠️ XTracker registry error ${regError.response.status}:`, regError.message);
+      if (regError.response && regError.response.status !== 404) {
+        console.error('XTracker registry:', regError.message);
       }
     }
     
-    // Check ownership endpoint
+    // Check ownership
     try {
       const ownershipRes = await axios.get(`https://api.xtracker.xyz/api/ownership/user?id=${robloxId}`, {
         headers: { 'Authorization': XTRACKER_API_KEY },
-        timeout: 8000
+        timeout: 5000
       });
       
-      // If user owns cheats
-      if (ownershipRes.data && ownershipRes.data.owns_cheats === true) {
+      if (ownershipRes.data && ownershipRes.data.owns_cheats) {
         isFlagged = true;
         cheats = ownershipRes.data.cheats || [];
         reason = `Owns exploits: ${cheats.join(', ')}`;
       }
     } catch (ownError) {
-      // 404 means no ownership records (clean)
-      if (ownError.response?.status === 404) {
-        console.log(`✅ XTracker ownership: User ${robloxId} has no exploits`);
-      } else if (ownError.response?.status) {
-        console.error(`⚠️ XTracker ownership error ${ownError.response.status}:`, ownError.message);
+      if (ownError.response && ownError.response.status !== 404) {
+        console.error('XTracker ownership:', ownError.message);
       }
     }
     
@@ -344,7 +338,6 @@ async function checkXTracker(robloxId) {
     };
     
   } catch (e) {
-    console.error('❌ XTracker general error:', e.message);
     return { 
       flagged: false, 
       confidence: 'error', 
@@ -353,6 +346,7 @@ async function checkXTracker(robloxId) {
     };
   }
 }
+
 
 async function setRobloxGroupRank(groupId, robloxUserId, roleId, apiKey) {
   try {
