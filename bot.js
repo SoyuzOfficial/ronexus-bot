@@ -241,23 +241,35 @@ async function getAllBadges(userId) {
   try {
     let allBadges = [];
     let cursor = '';
+    let fetchCount = 0;
+    const maxBadges = 10000; // Reasonable limit to avoid timeouts
     
-    while (true) {
+    while (allBadges.length < maxBadges && fetchCount < 100) {
       const url = cursor 
         ? `https://badges.roblox.com/v1/users/${userId}/badges?limit=100&cursor=${cursor}`
         : `https://badges.roblox.com/v1/users/${userId}/badges?limit=100`;
       
-      const res = await axios.get(url);
-      allBadges = allBadges.concat(res.data.data || []);
-      
-      if (!res.data.nextPageCursor) break;
-      cursor = res.data.nextPageCursor;
-      
-      if (allBadges.length > 5000) break;
+      try {
+        const res = await axios.get(url, { timeout: 5000 });
+        const badges = res.data.data || [];
+        
+        if (badges.length === 0) break;
+        
+        allBadges = allBadges.concat(badges);
+        
+        if (!res.data.nextPageCursor) break;
+        cursor = res.data.nextPageCursor;
+        
+        fetchCount++;
+      } catch (err) {
+        console.error('Badge fetch error:', err.message);
+        break;
+      }
     }
     
     return allBadges.length;
   } catch (e) {
+    console.error('getAllBadges error:', e.message);
     return 0;
   }
 }
@@ -271,12 +283,104 @@ async function checkPremium(userId) {
   }
 }
 
-async function detectAlts(userId, accountAgeDays) {
-  const isAlt = accountAgeDays < 30;
+async function detectAlts(userId, accountAgeDays, badges, friends, hasVerifiedBadge, hasPremium, inBlacklistedGroup) {
+  let altScore = 0;
+  let reasons = [];
+  
+  // Factor 1: Account age (0-40 points)
+  if (accountAgeDays < 1) {
+    altScore += 40;
+    reasons.push('Brand new account (<1 day)');
+  } else if (accountAgeDays < 7) {
+    altScore += 30;
+    reasons.push('Very new account (<7 days)');
+  } else if (accountAgeDays < 30) {
+    altScore += 20;
+    reasons.push('New account (<30 days)');
+  } else if (accountAgeDays < 90) {
+    altScore += 10;
+    reasons.push('Relatively new (<90 days)');
+  }
+  
+  // Factor 2: Friend count (0-25 points)
+  if (friends === 0) {
+    altScore += 25;
+    reasons.push('No friends');
+  } else if (friends < 3) {
+    altScore += 20;
+    reasons.push('Very few friends');
+  } else if (friends < 10) {
+    altScore += 10;
+    reasons.push('Low friend count');
+  }
+  
+  // Factor 3: Badge count (0-20 points)
+  if (badges === 0) {
+    altScore += 20;
+    reasons.push('No badges earned');
+  } else if (badges < 5) {
+    altScore += 15;
+    reasons.push('Very few badges');
+  } else if (badges < 20) {
+    altScore += 8;
+    reasons.push('Low badge count');
+  }
+  
+  // Factor 4: Blacklisted group (instant red flag)
+  if (inBlacklistedGroup) {
+    altScore += 50;
+    reasons.push('IN BLACKLISTED GROUP');
+  }
+  
+  // Factor 5: Verified badge (reduces score)
+  if (hasVerifiedBadge) {
+    altScore -= 20;
+    reasons.push('Has verified badge (legit)');
+  }
+  
+  // Factor 6: Premium (reduces score)
+  if (hasPremium) {
+    altScore -= 15;
+    reasons.push('Has premium (legit)');
+  }
+  
+  // Ensure score is between 0-100
+  altScore = Math.max(0, Math.min(100, altScore));
+  
+  // Determine confidence level
+  let confidence;
+  let isLikelyAlt;
+  
+  if (altScore >= 80) {
+    confidence = 'CRITICAL - Almost certainly an alt';
+    isLikelyAlt = true;
+  } else if (altScore >= 60) {
+    confidence = 'HIGH - Very likely an alt';
+    isLikelyAlt = true;
+  } else if (altScore >= 40) {
+    confidence = 'MEDIUM - Possibly an alt';
+    isLikelyAlt = true;
+  } else if (altScore >= 20) {
+    confidence = 'LOW - Some alt indicators';
+    isLikelyAlt = false;
+  } else {
+    confidence = 'CLEAN - Unlikely to be alt';
+    isLikelyAlt = false;
+  }
+  
   return {
-    isLikelyAlt: isAlt,
-    reason: isAlt ? 'Account < 30 days old' : 'Account age normal',
-    confidence: isAlt ? 'medium' : 'low'
+    isLikelyAlt: isLikelyAlt,
+    altScore: altScore,
+    confidence: confidence,
+    reason: reasons.length > 0 ? reasons.join(', ') : 'Normal account activity',
+    factors: {
+      accountAge: accountAgeDays,
+      friends: friends,
+      badges: badges,
+      hasVerifiedBadge: hasVerifiedBadge,
+      hasPremium: hasPremium,
+      inBlacklistedGroup: inBlacklistedGroup
+    }
   };
 }
 
@@ -823,22 +927,34 @@ client.on('interactionCreate', async interaction => {
       await interaction.deferReply({ ephemeral: true });
       
       try {
-        // Get all badges with pagination up to 10,000
+        // Get all badges with pagination up to 1,000,000
         let allBadges = [];
         let cursor = '';
+        let fetchCount = 0;
+        const maxFetch = 10000; // Fetch up to 10k badges max to avoid timeout
         
-        while (allBadges.length < 10000) {
+        while (allBadges.length < maxFetch) {
           const url = cursor 
             ? `https://badges.roblox.com/v1/users/${robloxId}/badges?limit=100&cursor=${cursor}`
             : `https://badges.roblox.com/v1/users/${robloxId}/badges?limit=100`;
           
-          const res = await axios.get(url);
-          const badges = res.data.data || [];
-          
-          allBadges = allBadges.concat(badges);
-          
-          if (!res.data.nextPageCursor || badges.length === 0) break;
-          cursor = res.data.nextPageCursor;
+          try {
+            const res = await axios.get(url, { timeout: 5000 });
+            const badges = res.data.data || [];
+            
+            if (badges.length === 0) break;
+            
+            allBadges = allBadges.concat(badges);
+            
+            if (!res.data.nextPageCursor) break;
+            cursor = res.data.nextPageCursor;
+            
+            fetchCount++;
+            if (fetchCount > 100) break; // Safety limit
+          } catch (err) {
+            console.error('Badge fetch error:', err.message);
+            break;
+          }
         }
         
         if (allBadges.length === 0) {
@@ -858,7 +974,7 @@ client.on('interactionCreate', async interaction => {
           .setColor('#FFD700')
           .setTitle('🎖️ User Badges')
           .setDescription(`**Roblox ID:** ${robloxId}\n**Total Badges:** ${allBadges.length}\n\n${badgeList}`)
-          .setFooter({ text: `Showing ${start + 1}-${Math.min(end, allBadges.length)} of ${allBadges.length} badges (Max: 10,000) | Page ${page + 1}/${totalPages}` });
+          .setFooter({ text: `Showing ${start + 1}-${Math.min(end, allBadges.length)} of ${allBadges.length} badges (Fetched up to 10k) | Page ${page + 1}/${totalPages}` });
         
         const buttons = new ActionRowBuilder();
         if (page > 0) {
@@ -883,7 +999,8 @@ client.on('interactionCreate', async interaction => {
           components: buttons.components.length > 0 ? [buttons] : [] 
         });
       } catch (e) {
-        return interaction.editReply({ content: `❌ ${e.message}` });
+        console.error('Badges error:', e);
+        return interaction.editReply({ content: `❌ Error fetching badges: ${e.message}` });
       }
     }
     
@@ -1171,7 +1288,7 @@ client.on('interactionCreate', async interaction => {
       
       const hasPremium = await checkPremium(robloxId);
       const hasVerifiedBadge = robloxInfo.hasVerifiedBadge || false;
-      const altCheck = await detectAlts(robloxId, accountAgeDays);
+      const altCheck = await detectAlts(robloxId, accountAgeDays, badgeCount, friendCount, hasVerifiedBadge, hasPremium, inBlacklistedGroup);
       const riskScore = calculateRiskScore(accountAgeDays, badgeCount, friendCount, hasVerifiedBadge, hasPremium, inBlacklistedGroup);
       const riskLevel = getRiskLevel(riskScore);
       
@@ -1181,6 +1298,8 @@ client.on('interactionCreate', async interaction => {
       );
       
       const riskColor = riskLevel === 'CRITICAL' ? '#FF0000' : riskLevel === 'HIGH' ? '#FFA500' : riskLevel === 'MEDIUM' ? '#FFFF00' : '#00FF00';
+      const altColor = altCheck.altScore >= 60 ? '🚨' : altCheck.altScore >= 40 ? '⚠️' : altCheck.altScore >= 20 ? '⚡' : '✅';
+      
       const embed = new EmbedBuilder()
         .setColor(riskColor)
         .setTitle('🔍 Background Check')
@@ -1192,7 +1311,7 @@ client.on('interactionCreate', async interaction => {
           { name: '👥 Friends', value: `${friendCount}`, inline: true },
           { name: '💎 Premium', value: hasPremium ? '✅ Yes' : '❌ No', inline: true },
           { name: '✅ Verified Badge', value: hasVerifiedBadge ? '✅ Yes' : '❌ No', inline: true },
-          { name: '🔄 Alt Detection', value: `${altCheck.isLikelyAlt ? '🚨 Likely Alt' : '✅ Normal'}\n${altCheck.reason}`, inline: false }
+          { name: '🔄 Alt Detection', value: `${altColor} **${altCheck.confidence}**\n**Score:** ${altCheck.altScore}/100\n**Indicators:** ${altCheck.reason}`, inline: false }
         );
       
       if (inBlacklistedGroup) {
