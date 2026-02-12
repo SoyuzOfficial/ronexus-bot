@@ -234,7 +234,7 @@ async function getAllBadges(userId) {
       if (!res.data.nextPageCursor) break;
       cursor = res.data.nextPageCursor;
       
-      if (allBadges.length > 5000) break;
+      if (allBadges.length > 5000000000) break;
     }
     
     return allBadges.length;
