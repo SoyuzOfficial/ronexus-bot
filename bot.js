@@ -38,6 +38,29 @@ async function ensureTablesExist() {
         updated_at TIMESTAMP DEFAULT NOW()
       );
       
+      -- Add missing columns to existing licenses table
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='licenses' AND column_name='whop_membership_id') THEN
+          ALTER TABLE licenses ADD COLUMN whop_membership_id VARCHAR(100) UNIQUE;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='licenses' AND column_name='tier') THEN
+          ALTER TABLE licenses ADD COLUMN tier VARCHAR(20) NOT NULL DEFAULT 'starter';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='licenses' AND column_name='max_servers') THEN
+          ALTER TABLE licenses ADD COLUMN max_servers INT DEFAULT 1;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='licenses' AND column_name='max_groups') THEN
+          ALTER TABLE licenses ADD COLUMN max_groups INT DEFAULT 3;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='licenses' AND column_name='expires_at') THEN
+          ALTER TABLE licenses ADD COLUMN expires_at TIMESTAMP;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='licenses' AND column_name='updated_at') THEN
+          ALTER TABLE licenses ADD COLUMN updated_at TIMESTAMP DEFAULT NOW();
+        END IF;
+      END $$;
+      
       CREATE TABLE IF NOT EXISTS guild_licenses (
         id SERIAL PRIMARY KEY,
         guild_id VARCHAR(20) NOT NULL,
@@ -334,6 +357,11 @@ async function getAllBadges(userId) {
         
         fetchCount++;
       } catch (err) {
+        // Check if it's a privacy/permission error
+        if (err.response?.status === 403 || err.response?.status === 401) {
+          console.log('Badge inventory is private');
+          return -1; // Return -1 to indicate private
+        }
         console.error('Badge fetch error:', err.message);
         break;
       }
@@ -342,6 +370,9 @@ async function getAllBadges(userId) {
     return allBadges.length;
   } catch (e) {
     console.error('getAllBadges error:', e.message);
+    if (e.response?.status === 403 || e.response?.status === 401) {
+      return -1; // Private
+    }
     return 0;
   }
 }
@@ -710,6 +741,7 @@ client.once('ready', async () => {
     { name: 'activate', description: 'Activate bot', options: [{ name: 'license', description: 'License key', type: 3, required: true }] },
     { name: 'license', description: 'Check license status', default_member_permissions: '8' },
     { name: 'verify', description: 'Verify Roblox account' },
+    { name: 'profile', description: 'View user profile', options: [{ name: 'user', description: '@user or username', type: 3, required: false }] },
     { name: 'setup', description: 'Setup guide', default_member_permissions: '8' },
     
     // Config - MERGED setabbreviation into addrank
@@ -1277,6 +1309,82 @@ client.on('interactionCreate', async interaction => {
     });
   }
 
+  if (commandName === 'profile') {
+    await interaction.deferReply();
+    
+    const input = options.getString('user');
+    let targetUser = user;
+    let robloxId = null, robloxUsername = null;
+    
+    // Check if input is provided
+    if (input) {
+      const mention = input.match(/<@!?(\d+)>/);
+      if (mention) {
+        try {
+          targetUser = await interaction.guild.members.fetch(mention[1]);
+        } catch (e) {
+          return interaction.editReply('❌ User not found in this server!');
+        }
+      }
+    }
+    
+    // Check if user is verified
+    const verified = await pool.query(
+      'SELECT roblox_id, roblox_username FROM verified_users WHERE guild_id = $1 AND user_id = $2',
+      [guildId, targetUser.id]
+    );
+    
+    if (verified.rows.length === 0) {
+      return interaction.editReply(`❌ **${targetUser.user?.tag || targetUser.tag}** is not verified!\n\nThey need to use \`/verify\` first.`);
+    }
+    
+    robloxId = verified.rows[0].roblox_id;
+    robloxUsername = verified.rows[0].roblox_username;
+    
+    try {
+      // Get Roblox info and profile picture
+      const [robloxInfo, profilePic, userPoints] = await Promise.all([
+        getRobloxUserInfo(robloxId),
+        getProfilePicture(robloxId),
+        pool.query('SELECT points FROM user_points WHERE guild_id = $1 AND user_id = $2', [guildId, targetUser.id])
+      ]);
+      
+      if (!robloxInfo) return interaction.editReply('❌ Failed to fetch Roblox profile!');
+      
+      const createdDate = new Date(robloxInfo.created);
+      const accountAgeDays = Math.floor((Date.now() - createdDate.getTime()) / (1000 * 60 * 60 * 24));
+      const points = userPoints.rows.length > 0 ? userPoints.rows[0].points : 0;
+      
+      const embed = new EmbedBuilder()
+        .setColor('#00a6ff')
+        .setTitle(`👤 Profile: ${robloxUsername}`)
+        .setDescription(`🔗 [View on Roblox](https://www.roblox.com/users/${robloxId}/profile)`)
+        .addFields(
+          { name: '✅ Verification Status', value: '🟢 Verified', inline: true },
+          { name: '🆔 Roblox ID', value: robloxId, inline: true },
+          { name: '💰 Server Points', value: `${points} points`, inline: true },
+          { name: '📅 Account Age', value: `${accountAgeDays} days`, inline: true },
+          { name: '💎 Premium', value: robloxInfo.hasVerifiedBadge ? '✅ Yes' : '❌ No', inline: true },
+          { name: '📱 Discord', value: `<@${targetUser.id}>`, inline: true }
+        )
+        .setFooter({ text: `Verified in this server` })
+        .setTimestamp();
+      
+      if (profilePic) {
+        embed.setThumbnail(profilePic);
+      }
+      
+      if (robloxInfo.displayName && robloxInfo.displayName !== robloxInfo.name) {
+        embed.addFields({ name: '📝 Display Name', value: robloxInfo.displayName, inline: false });
+      }
+      
+      return interaction.editReply({ embeds: [embed] });
+    } catch (e) {
+      console.error('Profile error:', e);
+      return interaction.editReply(`❌ Error fetching profile: ${e.message}`);
+    }
+  }
+
   if (commandName === 'setup') {
     return interaction.reply({ embeds: [new EmbedBuilder()
       .setColor('#FFA500')
@@ -1540,13 +1648,18 @@ client.on('interactionCreate', async interaction => {
       
       const hasPremium = await checkPremium(robloxId);
       const hasVerifiedBadge = robloxInfo.hasVerifiedBadge || false;
-      const altCheck = await detectAlts(robloxId, accountAgeDays, badgeCount, friendCount, hasVerifiedBadge, hasPremium, inBlacklistedGroup);
-      const riskScore = calculateRiskScore(accountAgeDays, badgeCount, friendCount, hasVerifiedBadge, hasPremium, inBlacklistedGroup);
+      
+      // Handle private badge inventory
+      const badgeDisplay = badgeCount === -1 ? 'N/A (Private)' : `${badgeCount}`;
+      const effectiveBadgeCount = badgeCount === -1 ? 0 : badgeCount; // Use 0 for risk calc if private
+      
+      const altCheck = await detectAlts(robloxId, accountAgeDays, effectiveBadgeCount, friendCount, hasVerifiedBadge, hasPremium, inBlacklistedGroup);
+      const riskScore = calculateRiskScore(accountAgeDays, effectiveBadgeCount, friendCount, hasVerifiedBadge, hasPremium, inBlacklistedGroup);
       const riskLevel = getRiskLevel(riskScore);
       
       await pool.query(
         'INSERT INTO background_checks (guild_id, user_id, roblox_id, roblox_username, risk_score, risk_level, account_age_days, has_premium, total_badges, total_friends) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)', 
-        [guildId, mention ? mention[1] : 'manual', robloxId, robloxUsername, riskScore, riskLevel, accountAgeDays, hasPremium, badgeCount, friendCount]
+        [guildId, mention ? mention[1] : 'manual', robloxId, robloxUsername, riskScore, riskLevel, accountAgeDays, hasPremium, effectiveBadgeCount, friendCount]
       );
       
       const riskColor = riskLevel === 'CRITICAL' ? '#FF0000' : riskLevel === 'HIGH' ? '#FFA500' : riskLevel === 'MEDIUM' ? '#FFFF00' : '#00FF00';
@@ -1576,7 +1689,7 @@ client.on('interactionCreate', async interaction => {
           { name: '⚠️ Risk Level', value: `${riskLevel} (${riskScore}/10)`, inline: true },
           { name: '🔒 Profile', value: isPrivate ? '🔐 Private' : '🌐 Public', inline: true },
           { name: '📅 Account Age', value: `${accountAgeDays} days`, inline: true },
-          { name: '🎖️ Badges', value: `${badgeCount}`, inline: true },
+          { name: '🎖️ Badges', value: badgeDisplay, inline: true },
           { name: '👥 Friends', value: `${friendCount}`, inline: true },
           { name: '💎 Premium', value: hasPremium ? '✅ Yes' : '❌ No', inline: true },
           { name: '✅ Verified Badge', value: hasVerifiedBadge ? '✅ Yes' : '❌ No', inline: true },
