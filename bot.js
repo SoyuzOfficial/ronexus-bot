@@ -337,7 +337,7 @@ async function getAllBadges(userId) {
     let allBadges = [];
     let cursor = '';
     let fetchCount = 0;
-    const maxBadges = 10000; // Reasonable limit to avoid timeouts
+    const maxBadges = 10000;
     
     while (allBadges.length < maxBadges && fetchCount < 100) {
       const url = cursor 
@@ -357,23 +357,30 @@ async function getAllBadges(userId) {
         
         fetchCount++;
       } catch (err) {
+        // Log the actual error for debugging
+        console.log(`Badge API error for user ${userId}: Status ${err.response?.status}, Message: ${err.message}`);
+        
         // Check if it's a privacy/permission error
-        if (err.response?.status === 403 || err.response?.status === 401) {
-          console.log('Badge inventory is private');
-          return -1; // Return -1 to indicate private
+        if (err.response?.status === 403 || err.response?.status === 401 || err.response?.status === 429) {
+          console.log('Badge inventory is private or restricted');
+          return -1; // Return -1 to indicate private/restricted
         }
-        console.error('Badge fetch error:', err.message);
+        
+        // If first request fails with any error, might be private
+        if (fetchCount === 0) {
+          console.log('First badge request failed, marking as private');
+          return -1;
+        }
+        
         break;
       }
     }
     
     return allBadges.length;
   } catch (e) {
-    console.error('getAllBadges error:', e.message);
-    if (e.response?.status === 403 || e.response?.status === 401) {
-      return -1; // Private
-    }
-    return 0;
+    console.error('getAllBadges outer error:', e.message, 'Status:', e.response?.status);
+    // Any error on first try = assume private
+    return -1;
   }
 }
 
