@@ -1147,7 +1147,7 @@ client.on('interactionCreate', async interaction => {
     return interaction.reply({ embeds: [new EmbedBuilder()
       .setColor('#FFA500')
       .setTitle('⚙️ RoNexus Setup Guide')
-      .setDescription('-# All Properties Owned by :RoNexus: RoNexus (C) 2026')
+      .setDescription('')
       .addFields(
         { name: '1️⃣ Get Roblox API Key', value: '• Go to: https://create.roblox.com/credentials\n• Create Open Cloud API key\n• Select your group\n• Give it `group.member` permission\n• Copy the key' },
         { name: '2️⃣ Add Your Group', value: '`/addgroup GROUP_ID YOUR_API_KEY`' },
@@ -1250,7 +1250,7 @@ client.on('interactionCreate', async interaction => {
     return interaction.reply({ embeds: [new EmbedBuilder()
       .setColor('#FFD700')
       .setTitle('💰 Points')
-      .setDescription(`<@${targetId}> has **${pts}** points\n\n-# All Properties Owned by :RoNexus: RoNexus (C) 2026`)
+      .setDescription(`<@${targetId}> has **${pts}** points\n\n`)
     ]});
   }
 
@@ -1282,7 +1282,7 @@ client.on('interactionCreate', async interaction => {
     await checkAndPromote(guildId, targetId, newPoints.rows[0].points);
     
     return interaction.reply({ 
-      content: `✅ Added **+${amount}** points to <@${targetId}>!\n**Reason:** ${reason}\n**New Total:** ${newPoints.rows[0].points} points\n\n-# All Properties Owned by :RoNexus: RoNexus (C) 2026` 
+      content: `✅ Added **+${amount}** points to <@${targetId}>!\n**Reason:** ${reason}\n**New Total:** ${newPoints.rows[0].points} points\n\n` 
     });
   }
 
@@ -1309,7 +1309,7 @@ client.on('interactionCreate', async interaction => {
       [amount, guildId, targetId]
     );
     
-    return interaction.reply({ content: `✅ Removed **-${amount}** points from <@${targetId}>\n\n-# All Properties Owned by :RoNexus: RoNexus (C) 2026` });
+    return interaction.reply({ content: `✅ Removed **-${amount}** points from <@${targetId}>\n\n` });
   }
 
   if (commandName === 'leaderboard') {
@@ -1327,7 +1327,7 @@ client.on('interactionCreate', async interaction => {
     return interaction.reply({ embeds: [new EmbedBuilder()
       .setColor('#FFD700')
       .setTitle('🏆 Points Leaderboard')
-      .setDescription(`${lb}\n\n-# All Properties Owned by :RoNexus: RoNexus (C) 2026`)
+      .setDescription(`${lb}\n\n`)
     ]});
   }
 
@@ -1412,7 +1412,7 @@ client.on('interactionCreate', async interaction => {
       const embed = new EmbedBuilder()
         .setColor(riskColor)
         .setTitle('🔍 Background Check')
-        .setDescription(`**${robloxUsername}** (ID: ${robloxId})\n🔗 [View Profile](https://www.roblox.com/users/${robloxId}/profile)\n\n-# All Properties Owned by :RoNexus: RoNexus (C) 2026`)
+        .setDescription(`**${robloxUsername}** (ID: ${robloxId})\n🔗 [View Profile](https://www.roblox.com/users/${robloxId}/profile)\n\n`)
         .addFields(
           { name: '⚠️ Risk Level', value: `${riskLevel} (${riskScore}/10)`, inline: true },
           { name: '🔒 Profile', value: isPrivate ? '🔐 Private' : '🌐 Public', inline: true },
@@ -1525,7 +1525,7 @@ client.on('interactionCreate', async interaction => {
     const embed = new EmbedBuilder()
       .setTitle('🚫 Blacklist')
       .setColor('#FF0000')
-      .setDescription('-# All Properties Owned by :RoNexus: RoNexus (C) 2026');
+      .setDescription('');
     
     if (users.rows.length > 0) {
       const userList = users.rows.map(r => `• **${r.roblox_username}** - ${r.reason}`).join('\n');
@@ -1569,7 +1569,7 @@ client.on('interactionCreate', async interaction => {
       const embed = new EmbedBuilder()
         .setColor('#FFA500')
         .setTitle(`⚠️ Warnings for ${target.username}`)
-        .setDescription(`${warnList}\n\n-# All Properties Owned by :RoNexus: RoNexus (C) 2026`)
+        .setDescription(`${warnList}\n\n`)
         .setFooter({ text: `Total Active Warnings: ${warns.rows.length}` });
       
       return interaction.reply({ embeds: [embed], ephemeral: true });
@@ -1630,7 +1630,7 @@ client.on('interactionCreate', async interaction => {
       await channel.send(message);
       
       return interaction.reply({ 
-        content: `✅ Message sent to ${channel}\n\n-# All Properties Owned by :RoNexus: RoNexus (C) 2026`, 
+        content: `✅ Message sent to ${channel}\n\n`, 
         ephemeral: true 
       });
     } catch (e) {
@@ -1659,7 +1659,7 @@ client.on('interactionCreate', async interaction => {
       await channel.send({ embeds: [embed] });
       
       return interaction.reply({ 
-        content: `✅ Embedded message sent to ${channel}\n\n-# All Properties Owned by :RoNexus: RoNexus (C) 2026`, 
+        content: `✅ Embedded message sent to ${channel}\n\n`, 
         ephemeral: true 
       });
     } catch (e) {
