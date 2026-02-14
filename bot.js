@@ -2160,6 +2160,48 @@ app.post('/whop/webhook', express.json(), async (req, res) => {
 
 app.get('/', (req, res) => res.send('🤖 RoNexus Bot Online!'));
 
+// ADMIN: Create free Enterprise license (visit this URL once)
+app.get('/admin/create-enterprise-license', async (req, res) => {
+  try {
+    const licenseKey = 'RONEXUS-ENTERPRISE-TEST-FREE';
+    
+    // Check if already exists
+    const existing = await pool.query('SELECT * FROM licenses WHERE license_key = $1', [licenseKey]);
+    if (existing.rows.length > 0) {
+      return res.send('✅ License already exists! Use: /activate RONEXUS-ENTERPRISE-TEST-FREE');
+    }
+    
+    // Create enterprise license
+    await pool.query(
+      'INSERT INTO licenses (license_key, tier, max_servers, max_groups, is_active) VALUES ($1, $2, $3, $4, $5)',
+      [licenseKey, 'enterprise', -1, -1, true]
+    );
+    
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head><title>License Created</title></head>
+      <body style="font-family: Arial; text-align: center; padding: 50px; background: #1a1a1a; color: white;">
+        <h1 style="color: #00a6ff;">✅ Enterprise License Created!</h1>
+        <div style="background: #2a2a2a; padding: 30px; border-radius: 10px; margin: 20px auto; max-width: 500px;">
+          <h2>Your License Key:</h2>
+          <p style="font-size: 20px; color: #00ff00; font-weight: bold;">RONEXUS-ENTERPRISE-TEST-FREE</p>
+          <hr style="border-color: #444;">
+          <p><strong>Tier:</strong> 🥇 Enterprise</p>
+          <p><strong>Servers:</strong> Unlimited</p>
+          <p><strong>Groups:</strong> Unlimited</p>
+          <hr style="border-color: #444;">
+          <p style="color: #ffaa00;">Use this in Discord:</p>
+          <code style="background: #000; padding: 10px; display: block; border-radius: 5px;">/activate RONEXUS-ENTERPRISE-TEST-FREE</code>
+        </div>
+      </body>
+      </html>
+    `);
+  } catch (e) {
+    res.send(`❌ Error: ${e.message}`);
+  }
+});
+
 app.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
 
 // Keep-alive ping
