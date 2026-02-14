@@ -200,6 +200,40 @@ async function getUserGroups(userId) {
   }
 }
 
+async function checkIfPrivateProfile(userId) {
+  try {
+    // Try to get inventory - if it fails with 401, account is private
+    const res = await axios.get(`https://inventory.roblox.com/v1/users/${userId}/can-view-inventory`);
+    return res.data.canView === false;
+  } catch (e) {
+    if (e.response?.status === 401 || e.response?.status === 403) {
+      return true; // Private
+    }
+    return false; // Assume public if error
+  }
+}
+
+async function getPreviousUsernames(userId) {
+  try {
+    const res = await axios.get(`https://users.roblox.com/v1/users/${userId}/username-history?limit=10&sortOrder=Desc`);
+    return res.data.data || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function getProfilePicture(userId) {
+  try {
+    const res = await axios.get(`https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=150x150&format=Png`);
+    if (res.data.data && res.data.data.length > 0) {
+      return res.data.data[0].imageUrl;
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function getUserGames(userId) {
   try {
     const res = await axios.get(`https://games.roblox.com/v2/users/${userId}/games?limit=50&sortOrder=Desc`);
@@ -1037,6 +1071,19 @@ client.on('interactionCreate', async interaction => {
   }
 
   if (commandName === 'verify') {
+    // Check if user is already verified in this guild
+    const alreadyVerified = await pool.query(
+      'SELECT roblox_username FROM verified_users WHERE guild_id = $1 AND user_id = $2',
+      [guildId, user.id]
+    );
+    
+    if (alreadyVerified.rows.length > 0) {
+      return interaction.reply({
+        content: `✅ You're already verified as **${alreadyVerified.rows[0].roblox_username}**!\n\nNo need to verify again.`,
+        ephemeral: true
+      });
+    }
+    
     const state = `${guildId}_${user.id}_${Date.now()}`;
     pendingVerifications.set(state, { guildId, userId: user.id });
     const authUrl = `https://apis.roblox.com/oauth/v1/authorize?client_id=${ROBLOX_CLIENT_ID}&redirect_uri=${encodeURIComponent(OAUTH_REDIRECT)}&scope=openid%20profile&response_type=code&state=${state}`;
@@ -1270,10 +1317,16 @@ client.on('interactionCreate', async interaction => {
       const robloxInfo = await getRobloxUserInfo(robloxId);
       if (!robloxInfo) return interaction.editReply('❌ Failed to fetch user info!');
       
-      const badgeCount = await getAllBadges(robloxId);
-      const friendsRes = await axios.get(`https://friends.roblox.com/v1/users/${robloxId}/friends/count`);
+      const [badgeCount, friendsRes, userGroups, isPrivate, previousNames, profilePic] = await Promise.all([
+        getAllBadges(robloxId),
+        axios.get(`https://friends.roblox.com/v1/users/${robloxId}/friends/count`),
+        getUserGroups(robloxId),
+        checkIfPrivateProfile(robloxId),
+        getPreviousUsernames(robloxId),
+        getProfilePicture(robloxId)
+      ]);
+      
       const friendCount = friendsRes.data.count || 0;
-      const userGroups = await getUserGroups(robloxId);
       const groupIds = userGroups.map(g => g.group.id);
       
       const allBlacklistedGroups = [...AUTO_BLACKLIST_GROUPS];
@@ -1300,19 +1353,29 @@ client.on('interactionCreate', async interaction => {
       const riskColor = riskLevel === 'CRITICAL' ? '#FF0000' : riskLevel === 'HIGH' ? '#FFA500' : riskLevel === 'MEDIUM' ? '#FFFF00' : '#00FF00';
       const altColor = altCheck.altScore >= 60 ? '🚨' : altCheck.altScore >= 40 ? '⚠️' : altCheck.altScore >= 20 ? '⚡' : '✅';
       
+      const previousNamesText = previousNames.length > 0 
+        ? previousNames.slice(0, 5).map(n => n.name).join(', ')
+        : 'No previous names';
+      
       const embed = new EmbedBuilder()
         .setColor(riskColor)
         .setTitle('🔍 Background Check')
-        .setDescription(`**${robloxUsername}** (${robloxId})`)
+        .setDescription(`**${robloxUsername}** (ID: ${robloxId})\n🔗 [View Profile](https://www.roblox.com/users/${robloxId}/profile)`)
         .addFields(
           { name: '⚠️ Risk Level', value: `${riskLevel} (${riskScore}/10)`, inline: true },
+          { name: '🔒 Profile', value: isPrivate ? '🔐 Private' : '🌐 Public', inline: true },
           { name: '📅 Account Age', value: `${accountAgeDays} days`, inline: true },
           { name: '🎖️ Badges', value: `${badgeCount}`, inline: true },
           { name: '👥 Friends', value: `${friendCount}`, inline: true },
           { name: '💎 Premium', value: hasPremium ? '✅ Yes' : '❌ No', inline: true },
           { name: '✅ Verified Badge', value: hasVerifiedBadge ? '✅ Yes' : '❌ No', inline: true },
+          { name: '📝 Previous Names', value: previousNamesText, inline: false },
           { name: '🔄 Alt Detection', value: `${altColor} **${altCheck.confidence}**\n**Score:** ${altCheck.altScore}/100\n**Indicators:** ${altCheck.reason}`, inline: false }
         );
+      
+      if (profilePic) {
+        embed.setThumbnail(profilePic);
+      }
       
       if (inBlacklistedGroup) {
         const groupList = blacklistedGroups.map(g => `• **${g.group.name}** (${g.group.id})`).join('\n');
@@ -1558,7 +1621,7 @@ app.get('/auth/callback', async (req, res) => {
     res.send(`<!DOCTYPE html>
 <html>
 <head>
-  <title>✅ Verified!</title>
+  <title>✅ Verified - RoNexus</title>
   <style>
     * {
       margin: 0;
@@ -1571,7 +1634,7 @@ app.get('/auth/callback', async (req, res) => {
       display: flex;
       align-items: center;
       justify-content: center;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
+      background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 50%, #0a0a0a 100%);
       animation: gradientShift 15s ease infinite;
       background-size: 400% 400%;
       color: white;
@@ -1584,13 +1647,29 @@ app.get('/auth/callback', async (req, res) => {
     .container {
       text-align: center;
       padding: 60px 40px;
-      max-width: 600px;
+      max-width: 650px;
+    }
+    .logo {
+      font-size: 72px;
+      font-weight: 800;
+      margin-bottom: 40px;
+      letter-spacing: -2px;
+    }
+    .logo-ro {
+      color: #00a6ff;
+      text-shadow: 0 0 20px rgba(0, 166, 255, 0.5);
+    }
+    .logo-nexus {
+      color: transparent;
+      -webkit-text-stroke: 2px #e0e0e0;
+      text-stroke: 2px #e0e0e0;
     }
     .checkmark {
       width: 100px;
       height: 100px;
       border-radius: 50%;
-      background: rgba(67, 181, 129, 0.3);
+      background: rgba(67, 181, 129, 0.2);
+      border: 3px solid #43b581;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -1611,7 +1690,7 @@ app.get('/auth/callback', async (req, res) => {
       width: 60px;
       height: 60px;
       stroke: #43b581;
-      stroke-width: 3;
+      stroke-width: 4;
       fill: none;
       stroke-linecap: round;
       stroke-linejoin: round;
@@ -1628,28 +1707,37 @@ app.get('/auth/callback', async (req, res) => {
       font-size: 48px;
       margin-bottom: 20px;
       font-weight: 700;
-      text-shadow: 0 2px 10px rgba(0,0,0,0.3);
+      text-shadow: 0 2px 10px rgba(0,0,0,0.5);
+      background: linear-gradient(135deg, #43b581 0%, #00a6ff 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
     }
     .success-box {
-      background: rgba(255, 255, 255, 0.15);
+      background: rgba(255, 255, 255, 0.05);
       backdrop-filter: blur(10px);
-      padding: 30px;
+      padding: 35px;
       border-radius: 20px;
       margin: 30px 0;
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
     }
     .username {
-      font-size: 28px;
+      font-size: 32px;
       font-weight: 600;
-      color: #fff;
+      color: #00a6ff;
       margin: 15px 0;
+      text-shadow: 0 0 10px rgba(0, 166, 255, 0.3);
     }
     .detail {
       font-size: 16px;
-      line-height: 1.8;
-      margin: 10px 0;
+      line-height: 2;
+      margin: 12px 0;
       opacity: 0.95;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
     }
     .detail strong {
       color: #fff;
@@ -1658,16 +1746,32 @@ app.get('/auth/callback', async (req, res) => {
     .footer {
       margin-top: 30px;
       font-size: 14px;
-      opacity: 0.8;
+      opacity: 0.6;
     }
     .emoji {
       font-size: 24px;
-      margin-right: 8px;
+    }
+    .glow {
+      position: absolute;
+      width: 300px;
+      height: 300px;
+      background: radial-gradient(circle, rgba(0,166,255,0.1) 0%, transparent 70%);
+      border-radius: 50%;
+      pointer-events: none;
+      animation: pulse 3s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 0.3; }
+      50% { transform: scale(1.2); opacity: 0.5; }
     }
   </style>
 </head>
 <body>
+  <div class="glow"></div>
   <div class="container">
+    <div class="logo">
+      <span class="logo-ro">Ro</span><span class="logo-nexus">Nexus</span>
+    </div>
     <div class="checkmark">
       <svg viewBox="0 0 52 52">
         <path d="M14 27l7 7 16-16"/>
@@ -1678,7 +1782,7 @@ app.get('/auth/callback', async (req, res) => {
       <div class="username"><span class="emoji">🎮</span>${robloxUsername}</div>
       <div class="detail"><strong>✅ Discord Nickname Updated</strong></div>
       <div class="detail"><strong>🎭 Verified Role Granted</strong></div>
-      <div class="detail"><strong>🔗 Account Linked</strong></div>
+      <div class="detail"><strong>🔗 Account Linked Successfully</strong></div>
     </div>
     <div class="footer">
       You can now close this page and return to Discord
