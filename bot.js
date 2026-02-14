@@ -27,17 +27,28 @@ async function ensureTablesExist() {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS licenses (
         id SERIAL PRIMARY KEY,
-        license_key VARCHAR(50) UNIQUE NOT NULL,
+        license_key VARCHAR(100) UNIQUE NOT NULL,
+        whop_membership_id VARCHAR(100) UNIQUE,
+        tier VARCHAR(20) NOT NULL DEFAULT 'starter',
+        max_servers INT DEFAULT 1,
+        max_groups INT DEFAULT 3,
         is_active BOOLEAN DEFAULT TRUE,
-        created_at TIMESTAMP DEFAULT NOW()
+        expires_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
       );
       
       CREATE TABLE IF NOT EXISTS guild_licenses (
         id SERIAL PRIMARY KEY,
-        guild_id VARCHAR(20) UNIQUE NOT NULL,
-        license_key VARCHAR(50) NOT NULL,
-        activated_at TIMESTAMP DEFAULT NOW()
+        guild_id VARCHAR(20) NOT NULL,
+        license_key VARCHAR(100) NOT NULL,
+        activated_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(guild_id)
       );
+      
+      CREATE INDEX IF NOT EXISTS idx_license_key ON licenses(license_key);
+      CREATE INDEX IF NOT EXISTS idx_whop_membership ON licenses(whop_membership_id);
+      CREATE INDEX IF NOT EXISTS idx_guild_license ON guild_licenses(guild_id);
       
       CREATE TABLE IF NOT EXISTS guild_config (
         guild_id VARCHAR(20) PRIMARY KEY,
@@ -579,6 +590,58 @@ async function giveVerifiedRole(guild, userId) {
   }
 }
 
+async function getTierInfo(tier) {
+  const tiers = {
+    'starter': { name: '🥉 Starter', maxServers: 1, maxGroups: 3, price: '$3/month' },
+    'professional': { name: '🥈 Professional', maxServers: 5, maxGroups: 10, price: '$12/month' },
+    'enterprise': { name: '🥇 Enterprise', maxServers: -1, maxGroups: -1, price: '$35/month' } // -1 = unlimited
+  };
+  return tiers[tier] || tiers['starter'];
+}
+
+async function checkLicenseLimits(licenseKey, guildId) {
+  try {
+    // Get license info
+    const licenseRes = await pool.query(
+      'SELECT tier, max_servers, max_groups, is_active, expires_at FROM licenses WHERE license_key = $1',
+      [licenseKey]
+    );
+    
+    if (licenseRes.rows.length === 0) {
+      return { allowed: false, reason: 'Invalid license key' };
+    }
+    
+    const license = licenseRes.rows[0];
+    
+    // Check if active
+    if (!license.is_active) {
+      return { allowed: false, reason: 'License is inactive' };
+    }
+    
+    // Check if expired
+    if (license.expires_at && new Date(license.expires_at) < new Date()) {
+      return { allowed: false, reason: 'License has expired' };
+    }
+    
+    // Check server limit
+    if (license.max_servers > 0) {
+      const serverCount = await pool.query(
+        'SELECT COUNT(*) FROM guild_licenses WHERE license_key = $1',
+        [licenseKey]
+      );
+      
+      if (parseInt(serverCount.rows[0].count) >= license.max_servers) {
+        return { allowed: false, reason: `Server limit reached (${license.max_servers} servers max)` };
+      }
+    }
+    
+    return { allowed: true, tier: license.tier, maxGroups: license.max_groups };
+  } catch (e) {
+    console.error('License check error:', e);
+    return { allowed: false, reason: 'Database error' };
+  }
+}
+
 async function checkAndPromote(guildId, userId, points) {
   try {
     const ranks = await pool.query(
@@ -645,6 +708,7 @@ client.once('ready', async () => {
   
   const commands = [
     { name: 'activate', description: 'Activate bot', options: [{ name: 'license', description: 'License key', type: 3, required: true }] },
+    { name: 'license', description: 'Check license status', default_member_permissions: '8' },
     { name: 'verify', description: 'Verify Roblox account' },
     { name: 'setup', description: 'Setup guide', default_member_permissions: '8' },
     
@@ -1086,27 +1150,97 @@ client.on('interactionCreate', async interaction => {
 
   if (commandName === 'activate') {
     const license = options.getString('license');
+    
     try {
-      const licCheck = await pool.query('SELECT * FROM licenses WHERE license_key = $1 AND is_active = true', [license]);
-      if (licCheck.rows.length === 0) return interaction.reply({ content: '❌ Invalid license!', ephemeral: true });
+      // Check if license exists and get limits
+      const limitCheck = await checkLicenseLimits(license, guildId);
       
+      if (!limitCheck.allowed) {
+        return interaction.reply({ content: `❌ ${limitCheck.reason}`, ephemeral: true });
+      }
+      
+      // Check if guild already activated
       const guildCheck = await pool.query('SELECT * FROM guild_licenses WHERE guild_id = $1', [guildId]);
-      if (guildCheck.rows.length > 0) return interaction.reply({ content: '✅ Already activated!', ephemeral: true });
+      if (guildCheck.rows.length > 0) {
+        return interaction.reply({ content: '✅ This server is already activated!', ephemeral: true });
+      }
       
-      await pool.query('INSERT INTO guild_licenses (guild_id, license_key) VALUES ($1, $2)', [guildId, license]);
+      // Activate the license for this guild
+      await pool.query(
+        'INSERT INTO guild_licenses (guild_id, license_key) VALUES ($1, $2)',
+        [guildId, license]
+      );
+      
+      const tierInfo = await getTierInfo(limitCheck.tier);
+      
       return interaction.reply({ embeds: [new EmbedBuilder()
         .setColor('#00FF00')
-        .setTitle('✅ Activated!')
-        .setDescription('**Next steps:**\n• `/verify` - Verify Roblox\n• `/addgroup GROUP_ID API_KEY` - Connect Roblox group\n• `/addrank @Role 100 "Member" CD` - Add rank with prefix')
+        .setTitle('✅ RoNexus Activated!')
+        .setDescription(`**License Tier:** ${tierInfo.name}\n**Plan:** ${tierInfo.price}`)
+        .addFields(
+          { name: '📊 Your Limits', value: `• Servers: ${tierInfo.maxServers === -1 ? 'Unlimited' : `${tierInfo.maxServers}`}\n• Groups: ${tierInfo.maxGroups === -1 ? 'Unlimited' : `${tierInfo.maxGroups}`}`, inline: false },
+          { name: '🚀 Next Steps', value: '• `/verify` - Verify Roblox\n• `/addgroup GROUP_ID API_KEY` - Connect Roblox group\n• `/addrank @Role 100 "Member" CD` - Add rank with prefix', inline: false }
+        )
       ]});
     } catch (e) { 
+      console.error('Activation error:', e);
       return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true }); 
     }
   }
 
   const activated = await pool.query('SELECT * FROM guild_licenses WHERE guild_id = $1', [guildId]);
   if (activated.rows.length === 0 && commandName !== 'activate') {
-    return interaction.reply({ content: '❌ Not activated! Use `/activate RNEX-FREE-2024`', ephemeral: true });
+    return interaction.reply({ content: '❌ Not activated! Use `/activate RONEXUS-LICENSE-KEY`', ephemeral: true });
+  }
+
+  if (commandName === 'license') {
+    try {
+      const guildLicense = await pool.query('SELECT license_key FROM guild_licenses WHERE guild_id = $1', [guildId]);
+      if (guildLicense.rows.length === 0) {
+        return interaction.reply({ content: '❌ No license found for this server!', ephemeral: true });
+      }
+      
+      const licenseKey = guildLicense.rows[0].license_key;
+      const licenseInfo = await pool.query(
+        'SELECT tier, max_servers, max_groups, is_active, expires_at, created_at FROM licenses WHERE license_key = $1',
+        [licenseKey]
+      );
+      
+      if (licenseInfo.rows.length === 0) {
+        return interaction.reply({ content: '❌ License not found in database!', ephemeral: true });
+      }
+      
+      const license = licenseInfo.rows[0];
+      const tierInfo = await getTierInfo(license.tier);
+      
+      // Count current usage
+      const serverCount = await pool.query('SELECT COUNT(*) FROM guild_licenses WHERE license_key = $1', [licenseKey]);
+      const groupCount = await pool.query('SELECT COUNT(*) FROM roblox_groups WHERE guild_id = $1', [guildId]);
+      
+      const serversUsed = parseInt(serverCount.rows[0].count);
+      const groupsUsed = parseInt(groupCount.rows[0].count);
+      
+      const expiresText = license.expires_at 
+        ? `Expires: ${new Date(license.expires_at).toLocaleDateString()}`
+        : 'No expiration';
+      
+      const statusEmoji = license.is_active ? '🟢' : '🔴';
+      const statusText = license.is_active ? 'Active' : 'Inactive';
+      
+      return interaction.reply({ embeds: [new EmbedBuilder()
+        .setColor(license.is_active ? '#00FF00' : '#FF0000')
+        .setTitle('📋 License Status')
+        .setDescription(`**Tier:** ${tierInfo.name}\n**Status:** ${statusEmoji} ${statusText}\n**${expiresText}**`)
+        .addFields(
+          { name: '🖥️ Servers', value: `${serversUsed}/${tierInfo.maxServers === -1 ? '∞' : tierInfo.maxServers}`, inline: true },
+          { name: '👥 Groups', value: `${groupsUsed}/${tierInfo.maxGroups === -1 ? '∞' : tierInfo.maxGroups}`, inline: true },
+          { name: '🔑 License Key', value: `||${licenseKey}||`, inline: false }
+        )
+        .setFooter({ text: `Activated: ${new Date(license.created_at).toLocaleDateString()}` })
+      ], ephemeral: true });
+    } catch (e) {
+      return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true });
+    }
   }
 
   if (commandName === 'verify') {
@@ -1198,14 +1332,39 @@ client.on('interactionCreate', async interaction => {
     const groupId = options.getInteger('group_id');
     const apiKey = options.getString('api_key');
     
-    await pool.query(
-      'INSERT INTO roblox_groups (guild_id, group_id, api_key, auto_rank_enabled) VALUES ($1, $2, $3, true)', 
-      [guildId, groupId, apiKey]
-    );
-    return interaction.reply({ 
-      content: `✅ Added group **${groupId}**!\n\n**Next:** Use \`/maprank @Role ROBLOX_RANK_ID\` to sync Discord roles with Roblox ranks`, 
-      ephemeral: true 
-    });
+    try {
+      // Get license info
+      const guildLicense = await pool.query('SELECT license_key FROM guild_licenses WHERE guild_id = $1', [guildId]);
+      const licenseKey = guildLicense.rows[0].license_key;
+      const licenseInfo = await pool.query('SELECT tier, max_groups FROM licenses WHERE license_key = $1', [licenseKey]);
+      const license = licenseInfo.rows[0];
+      
+      // Check group limit
+      if (license.max_groups > 0) {
+        const groupCount = await pool.query('SELECT COUNT(*) FROM roblox_groups WHERE guild_id = $1', [guildId]);
+        const currentGroups = parseInt(groupCount.rows[0].count);
+        
+        if (currentGroups >= license.max_groups) {
+          const tierInfo = await getTierInfo(license.tier);
+          return interaction.reply({ 
+            content: `❌ Group limit reached!\n\n**Your tier:** ${tierInfo.name}\n**Limit:** ${license.max_groups} groups\n**Current:** ${currentGroups} groups\n\nUpgrade your license to add more groups!`, 
+            ephemeral: true 
+          });
+        }
+      }
+      
+      await pool.query(
+        'INSERT INTO roblox_groups (guild_id, group_id, api_key, auto_rank_enabled) VALUES ($1, $2, $3, true)', 
+        [guildId, groupId, apiKey]
+      );
+      
+      return interaction.reply({ 
+        content: `✅ Added group **${groupId}**!\n\n**Next:** Use \`/maprank @Role ROBLOX_RANK_ID\` to sync Discord roles with Roblox ranks`, 
+        ephemeral: true 
+      });
+    } catch (e) {
+      return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true });
+    }
   }
 
   if (commandName === 'maprank') {
@@ -1917,6 +2076,85 @@ app.get('/auth/callback', async (req, res) => {
   <p>Please try again or contact support.</p>
 </body>
 </html>`);
+  }
+});
+
+// WHOP WEBHOOK - Handles license creation/renewal/cancellation
+app.post('/whop/webhook', express.json(), async (req, res) => {
+  try {
+    const event = req.body;
+    
+    console.log('📨 Whop webhook received:', event.action);
+    
+    // Verify it's from Whop (optional but recommended)
+    const whopSecret = process.env.WHOP_WEBHOOK_SECRET;
+    if (whopSecret) {
+      const signature = req.headers['x-whop-signature'];
+      // Add signature verification here if needed
+    }
+    
+    const action = event.action;
+    const membership = event.data;
+    
+    if (action === 'membership.created' || action === 'membership.renewed') {
+      // New membership or renewal
+      const planId = membership.plan_id;
+      const membershipId = membership.id;
+      const userEmail = membership.email;
+      
+      // Determine tier based on plan_id
+      let tier = 'starter';
+      let maxServers = 1;
+      let maxGroups = 3;
+      
+      // You'll get these plan IDs from Whop dashboard
+      if (planId === process.env.WHOP_PLAN_PROFESSIONAL) {
+        tier = 'professional';
+        maxServers = 5;
+        maxGroups = 10;
+      } else if (planId === process.env.WHOP_PLAN_ENTERPRISE) {
+        tier = 'enterprise';
+        maxServers = -1; // unlimited
+        maxGroups = -1; // unlimited
+      }
+      
+      // Calculate expiration (30 days for monthly)
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 30);
+      
+      // Generate license key
+      const licenseKey = `RONEXUS-${tier.toUpperCase()}-${Date.now()}-${Math.random().toString(36).substring(7).toUpperCase()}`;
+      
+      // Insert or update license
+      await pool.query(
+        `INSERT INTO licenses (license_key, whop_membership_id, tier, max_servers, max_groups, is_active, expires_at) 
+         VALUES ($1, $2, $3, $4, $5, true, $6)
+         ON CONFLICT (whop_membership_id) 
+         DO UPDATE SET is_active = true, expires_at = $6, tier = $3, max_servers = $4, max_groups = $5, updated_at = NOW()`,
+        [licenseKey, membershipId, tier, maxServers, maxGroups, expiresAt]
+      );
+      
+      console.log(`✅ License created/renewed: ${licenseKey} (Tier: ${tier})`);
+      
+      // TODO: Send license key to user via email/Discord
+      // You can integrate with Discord webhooks or email service here
+      
+    } else if (action === 'membership.cancelled' || action === 'membership.expired') {
+      // Cancel membership
+      const membershipId = membership.id;
+      
+      await pool.query(
+        'UPDATE licenses SET is_active = false, updated_at = NOW() WHERE whop_membership_id = $1',
+        [membershipId]
+      );
+      
+      console.log(`❌ License cancelled/expired: ${membershipId}`);
+    }
+    
+    res.status(200).json({ success: true });
+  } catch (e) {
+    console.error('❌ Whop webhook error:', e);
+    res.status(500).json({ error: e.message });
   }
 });
 
