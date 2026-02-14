@@ -215,9 +215,36 @@ async function checkIfPrivateProfile(userId) {
 
 async function getPreviousUsernames(userId) {
   try {
-    const res = await axios.get(`https://users.roblox.com/v1/users/${userId}/username-history?limit=10&sortOrder=Desc`);
-    return res.data.data || [];
+    // Try to get username history from the users endpoint
+    // Note: Roblox removed public username history, so this might return empty
+    // We'll try to get at least the display name if different
+    const userRes = await axios.get(`https://users.roblox.com/v1/users/${userId}`);
+    const names = [];
+    
+    // Check if display name is different (this is the closest we can get)
+    if (userRes.data.displayName && userRes.data.displayName !== userRes.data.name) {
+      names.push(userRes.data.displayName);
+    }
+    
+    // Try the games API which sometimes shows creator names
+    try {
+      const gamesRes = await axios.get(`https://games.roblox.com/v2/users/${userId}/games?limit=10`);
+      if (gamesRes.data.data && gamesRes.data.data.length > 0) {
+        gamesRes.data.data.forEach(game => {
+          if (game.creator && game.creator.name && game.creator.name !== userRes.data.name) {
+            if (!names.includes(game.creator.name)) {
+              names.push(game.creator.name);
+            }
+          }
+        });
+      }
+    } catch (e) {
+      // Ignore games API errors
+    }
+    
+    return names;
   } catch (e) {
+    console.error('Previous usernames error:', e.message);
     return [];
   }
 }
@@ -684,6 +711,18 @@ client.once('ready', async () => {
     { name: 'warn', description: 'Warn', default_member_permissions: '8', options: [
       { name: 'user', description: '@user', type: 6, required: true }, 
       { name: 'reason', description: 'Reason', type: 3, required: true }
+    ]},
+    
+    // Message as RoNexus
+    { name: 'msgr', description: 'Send message as RoNexus', default_member_permissions: '8', options: [
+      { name: 'channel', description: 'Channel to send in', type: 7, required: true },
+      { name: 'message', description: 'Message content', type: 3, required: true }
+    ]},
+    { name: 'msgre', description: 'Send embedded message as RoNexus', default_member_permissions: '8', options: [
+      { name: 'channel', description: 'Channel to send in', type: 7, required: true },
+      { name: 'title', description: 'Embed title', type: 3, required: true },
+      { name: 'message', description: 'Embed description', type: 3, required: true },
+      { name: 'color', description: 'Hex color (e.g. #FF0000)', type: 3, required: false }
     ]}
   ];
 
@@ -1108,6 +1147,7 @@ client.on('interactionCreate', async interaction => {
     return interaction.reply({ embeds: [new EmbedBuilder()
       .setColor('#FFA500')
       .setTitle('⚙️ RoNexus Setup Guide')
+      .setDescription('-# All Properties Owned by :RoNexus: RoNexus (C) 2026')
       .addFields(
         { name: '1️⃣ Get Roblox API Key', value: '• Go to: https://create.roblox.com/credentials\n• Create Open Cloud API key\n• Select your group\n• Give it `group.member` permission\n• Copy the key' },
         { name: '2️⃣ Add Your Group', value: '`/addgroup GROUP_ID YOUR_API_KEY`' },
@@ -1210,7 +1250,7 @@ client.on('interactionCreate', async interaction => {
     return interaction.reply({ embeds: [new EmbedBuilder()
       .setColor('#FFD700')
       .setTitle('💰 Points')
-      .setDescription(`<@${targetId}> has **${pts}** points`)
+      .setDescription(`<@${targetId}> has **${pts}** points\n\n-# All Properties Owned by :RoNexus: RoNexus (C) 2026`)
     ]});
   }
 
@@ -1242,7 +1282,7 @@ client.on('interactionCreate', async interaction => {
     await checkAndPromote(guildId, targetId, newPoints.rows[0].points);
     
     return interaction.reply({ 
-      content: `✅ Added **+${amount}** points to <@${targetId}>!\n**Reason:** ${reason}\n**New Total:** ${newPoints.rows[0].points} points` 
+      content: `✅ Added **+${amount}** points to <@${targetId}>!\n**Reason:** ${reason}\n**New Total:** ${newPoints.rows[0].points} points\n\n-# All Properties Owned by :RoNexus: RoNexus (C) 2026` 
     });
   }
 
@@ -1269,7 +1309,7 @@ client.on('interactionCreate', async interaction => {
       [amount, guildId, targetId]
     );
     
-    return interaction.reply({ content: `✅ Removed **-${amount}** points from <@${targetId}>` });
+    return interaction.reply({ content: `✅ Removed **-${amount}** points from <@${targetId}>\n\n-# All Properties Owned by :RoNexus: RoNexus (C) 2026` });
   }
 
   if (commandName === 'leaderboard') {
@@ -1287,7 +1327,7 @@ client.on('interactionCreate', async interaction => {
     return interaction.reply({ embeds: [new EmbedBuilder()
       .setColor('#FFD700')
       .setTitle('🏆 Points Leaderboard')
-      .setDescription(lb)
+      .setDescription(`${lb}\n\n-# All Properties Owned by :RoNexus: RoNexus (C) 2026`)
     ]});
   }
 
@@ -1353,14 +1393,26 @@ client.on('interactionCreate', async interaction => {
       const riskColor = riskLevel === 'CRITICAL' ? '#FF0000' : riskLevel === 'HIGH' ? '#FFA500' : riskLevel === 'MEDIUM' ? '#FFFF00' : '#00FF00';
       const altColor = altCheck.altScore >= 60 ? '🚨' : altCheck.altScore >= 40 ? '⚠️' : altCheck.altScore >= 20 ? '⚡' : '✅';
       
-      const previousNamesText = previousNames.length > 0 
-        ? previousNames.slice(0, 5).map(n => n.name).join(', ')
-        : 'No previous names';
+      // Handle display name vs username and previous names
+      let namesInfo = 'No alternate names found';
+      
+      if (robloxInfo.displayName && robloxInfo.displayName !== robloxInfo.name) {
+        namesInfo = `**Display Name:** ${robloxInfo.displayName}`;
+      }
+      
+      if (previousNames.length > 0) {
+        const prevNamesText = previousNames.join(', ');
+        if (namesInfo !== 'No alternate names found') {
+          namesInfo += `\n**Also known as:** ${prevNamesText}`;
+        } else {
+          namesInfo = `**Also known as:** ${prevNamesText}`;
+        }
+      }
       
       const embed = new EmbedBuilder()
         .setColor(riskColor)
         .setTitle('🔍 Background Check')
-        .setDescription(`**${robloxUsername}** (ID: ${robloxId})\n🔗 [View Profile](https://www.roblox.com/users/${robloxId}/profile)`)
+        .setDescription(`**${robloxUsername}** (ID: ${robloxId})\n🔗 [View Profile](https://www.roblox.com/users/${robloxId}/profile)\n\n-# All Properties Owned by :RoNexus: RoNexus (C) 2026`)
         .addFields(
           { name: '⚠️ Risk Level', value: `${riskLevel} (${riskScore}/10)`, inline: true },
           { name: '🔒 Profile', value: isPrivate ? '🔐 Private' : '🌐 Public', inline: true },
@@ -1369,7 +1421,7 @@ client.on('interactionCreate', async interaction => {
           { name: '👥 Friends', value: `${friendCount}`, inline: true },
           { name: '💎 Premium', value: hasPremium ? '✅ Yes' : '❌ No', inline: true },
           { name: '✅ Verified Badge', value: hasVerifiedBadge ? '✅ Yes' : '❌ No', inline: true },
-          { name: '📝 Previous Names', value: previousNamesText, inline: false },
+          { name: '📝 Names', value: namesInfo, inline: false },
           { name: '🔄 Alt Detection', value: `${altColor} **${altCheck.confidence}**\n**Score:** ${altCheck.altScore}/100\n**Indicators:** ${altCheck.reason}`, inline: false }
         );
       
@@ -1472,7 +1524,8 @@ client.on('interactionCreate', async interaction => {
     
     const embed = new EmbedBuilder()
       .setTitle('🚫 Blacklist')
-      .setColor('#FF0000');
+      .setColor('#FF0000')
+      .setDescription('-# All Properties Owned by :RoNexus: RoNexus (C) 2026');
     
     if (users.rows.length > 0) {
       const userList = users.rows.map(r => `• **${r.roblox_username}** - ${r.reason}`).join('\n');
@@ -1516,7 +1569,7 @@ client.on('interactionCreate', async interaction => {
       const embed = new EmbedBuilder()
         .setColor('#FFA500')
         .setTitle(`⚠️ Warnings for ${target.username}`)
-        .setDescription(warnList)
+        .setDescription(`${warnList}\n\n-# All Properties Owned by :RoNexus: RoNexus (C) 2026`)
         .setFooter({ text: `Total Active Warnings: ${warns.rows.length}` });
       
       return interaction.reply({ embeds: [embed], ephemeral: true });
@@ -1562,6 +1615,55 @@ client.on('interactionCreate', async interaction => {
       return interaction.reply({ content: `⚠️ Warned ${target}\n**Reason:** ${reason}` });
     } catch (e) {
       return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true });
+    }
+  }
+
+  if (commandName === 'msgr') {
+    const channel = options.getChannel('channel');
+    const message = options.getString('message');
+    
+    try {
+      if (!channel.isTextBased()) {
+        return interaction.reply({ content: '❌ Please select a text channel!', ephemeral: true });
+      }
+      
+      await channel.send(message);
+      
+      return interaction.reply({ 
+        content: `✅ Message sent to ${channel}\n\n-# All Properties Owned by :RoNexus: RoNexus (C) 2026`, 
+        ephemeral: true 
+      });
+    } catch (e) {
+      return interaction.reply({ content: `❌ Failed to send message: ${e.message}`, ephemeral: true });
+    }
+  }
+
+  if (commandName === 'msgre') {
+    const channel = options.getChannel('channel');
+    const title = options.getString('title');
+    const message = options.getString('message');
+    const color = options.getString('color') || '#00a6ff';
+    
+    try {
+      if (!channel.isTextBased()) {
+        return interaction.reply({ content: '❌ Please select a text channel!', ephemeral: true });
+      }
+      
+      const embed = new EmbedBuilder()
+        .setTitle(title)
+        .setDescription(message)
+        .setColor(color)
+        .setFooter({ text: 'RoNexus (C) 2026' })
+        .setTimestamp();
+      
+      await channel.send({ embeds: [embed] });
+      
+      return interaction.reply({ 
+        content: `✅ Embedded message sent to ${channel}\n\n-# All Properties Owned by :RoNexus: RoNexus (C) 2026`, 
+        ephemeral: true 
+      });
+    } catch (e) {
+      return interaction.reply({ content: `❌ Failed to send embed: ${e.message}`, ephemeral: true });
     }
   }
 });
