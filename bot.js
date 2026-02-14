@@ -2278,7 +2278,14 @@ app.post('/whop/webhook', express.json(), async (req, res) => {
   }
 });
 
-app.get('/', (req, res) => res.send('🤖 RoNexus Bot Online!'));
+// Serve website
+app.get('/', (req, res) => {
+  res.sendFile(__dirname + '/index.html');
+});
+
+app.get('/RoNexus.png', (req, res) => {
+  res.sendFile(__dirname + '/RoNexus.png');
+});
 
 // ADMIN: Create free Enterprise license (visit this URL once)
 app.get('/admin/create-enterprise-license', async (req, res) => {
