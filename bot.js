@@ -952,26 +952,6 @@ client.once('ready', async () => {
       { name: 'message', description: 'Message to send', type: 3, required: true }
     ]},
     
-    // Info & Help
-    { name: 'help', description: 'Show all commands and how to use them' },
-    { name: 'stats', description: 'View server statistics' },
-    { name: 'insights', description: 'View detailed server insights', default_member_permissions: '8' },
-    
-    // Configuration
-    { name: 'setwelcome', description: 'Set welcome message', default_member_permissions: '8', options: [
-      { name: 'channel', description: 'Welcome channel', type: 7, required: true },
-      { name: 'message', description: 'Message (use {user} for mention, {username} for name)', type: 3, required: true }
-    ]},
-    { name: 'setlog', description: 'Set activity log channel', default_member_permissions: '8', options: [
-      { name: 'channel', description: 'Log channel', type: 7, required: true }
-    ]},
-    { name: 'setunverified', description: 'Set role for unverified users', default_member_permissions: '8', options: [
-      { name: 'role', description: '@role to give unverified users', type: 8, required: true }
-    ]},
-    { name: 'sticky', description: 'Create sticky message', default_member_permissions: '8', options: [
-      { name: 'channel', description: 'Channel for sticky', type: 7, required: true },
-      { name: 'message', description: 'Message to keep at bottom', type: 3, required: true }
-    ]},
     { name: 'removesticky', description: 'Remove sticky message', default_member_permissions: '8', options: [
       { name: 'channel', description: 'Channel with sticky', type: 7, required: true }
     ]},
