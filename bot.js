@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, MessageFlags } = require('discord.js');
 const { Pool } = require('pg');
 const express = require('express');
 const axios = require('axios');
@@ -56,6 +56,9 @@ async function ensureTablesExist() {
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='licenses' AND column_name='expires_at') THEN
           ALTER TABLE licenses ADD COLUMN expires_at TIMESTAMP;
         END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='licenses' AND column_name='created_at') THEN
+          ALTER TABLE licenses ADD COLUMN created_at TIMESTAMP DEFAULT NOW();
+        END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='licenses' AND column_name='updated_at') THEN
           ALTER TABLE licenses ADD COLUMN updated_at TIMESTAMP DEFAULT NOW();
         END IF;
@@ -111,6 +114,15 @@ async function ensureTablesExist() {
         last_message_id VARCHAR(20),
         UNIQUE(guild_id, channel_id)
       );
+      
+      CREATE TABLE IF NOT EXISTS activation_attempts (
+        id SERIAL PRIMARY KEY,
+        guild_id VARCHAR(20) NOT NULL,
+        user_id VARCHAR(20) NOT NULL,
+        attempt_time TIMESTAMP DEFAULT NOW(),
+        success BOOLEAN DEFAULT FALSE
+      );
+      CREATE INDEX IF NOT EXISTS idx_activation_attempts ON activation_attempts(guild_id, user_id, attempt_time);
       
       CREATE TABLE IF NOT EXISTS verified_users (
         id SERIAL PRIMARY KEY,
@@ -731,6 +743,39 @@ async function checkLicenseLimits(licenseKey, guildId) {
   }
 }
 
+async function logActivity(guildId, eventType, message) {
+  try {
+    const config = await pool.query('SELECT log_channel_id FROM guild_config WHERE guild_id = $1', [guildId]);
+    if (config.rows.length === 0 || !config.rows[0].log_channel_id) return;
+    
+    const channel = client.channels.cache.get(config.rows[0].log_channel_id);
+    if (!channel) return;
+    
+    const colors = {
+      'verification': '#00FF00',
+      'rank_change': '#FFA500',
+      'points_added': '#00a6ff',
+      'points_removed': '#FF6B6B',
+      'warning': '#FFA500',
+      'kick': '#FF0000',
+      'ban': '#8B0000',
+      'dm_sent': '#9B59B6',
+      'config_change': '#667eea'
+    };
+    
+    const embed = new EmbedBuilder()
+      .setColor(colors[eventType] || '#00a6ff')
+      .setDescription(message)
+      .setFooter({ text: eventType.replace('_', ' ').toUpperCase() })
+      .setTimestamp();
+    
+    await channel.send({ embeds: [embed] });
+  } catch (e) {
+    console.error('Log activity error:', e);
+  }
+}
+
+
 async function checkAndPromote(guildId, userId, points) {
   try {
     const ranks = await pool.query(
@@ -799,13 +844,17 @@ client.once('ready', async () => {
     { name: 'activate', description: 'Activate bot', options: [{ name: 'license', description: 'License key', type: 3, required: true }] },
     { name: 'license', description: 'Check license status', default_member_permissions: '8' },
     { name: 'verify', description: 'Verify Roblox account' },
+    { name: 'update', description: 'Refresh roles and nickname' },
     { name: 'profile', description: 'View user profile', options: [{ name: 'user', description: '@user or username', type: 3, required: false }] },
-    { name: 'setup', description: 'Setup guide', default_member_permissions: '8' },
+    { name: 'setup', description: 'Interactive server setup', default_member_permissions: '8' },
     { name: 'help', description: 'View all commands and examples' },
     { name: 'stats', description: 'View server statistics', default_member_permissions: '8' },
     { name: 'insights', description: 'View server insights', default_member_permissions: '8' },
     
     // Configuration
+    { name: 'setpermissions', description: 'Set which roles can use admin commands', default_member_permissions: '8', options: [
+      { name: 'role', description: 'Role to give permissions', type: 8, required: true }
+    ]},
     { name: 'setwelcome', description: 'Set welcome message', default_member_permissions: '8', options: [
       { name: 'channel', description: 'Welcome channel', type: 7, required: true },
       { name: 'message', description: 'Welcome message ({user} = mention, {server} = server name)', type: 3, required: true }
@@ -901,6 +950,40 @@ client.once('ready', async () => {
     { name: 'dm', description: 'Send DM to a user', default_member_permissions: '8', options: [
       { name: 'user', description: '@user to DM', type: 6, required: true },
       { name: 'message', description: 'Message to send', type: 3, required: true }
+    ]},
+    
+    // Info & Help
+    { name: 'help', description: 'Show all commands and how to use them' },
+    { name: 'stats', description: 'View server statistics' },
+    { name: 'insights', description: 'View detailed server insights', default_member_permissions: '8' },
+    
+    // Configuration
+    { name: 'setwelcome', description: 'Set welcome message', default_member_permissions: '8', options: [
+      { name: 'channel', description: 'Welcome channel', type: 7, required: true },
+      { name: 'message', description: 'Message (use {user} for mention, {username} for name)', type: 3, required: true }
+    ]},
+    { name: 'setlog', description: 'Set activity log channel', default_member_permissions: '8', options: [
+      { name: 'channel', description: 'Log channel', type: 7, required: true }
+    ]},
+    { name: 'setunverified', description: 'Set role for unverified users', default_member_permissions: '8', options: [
+      { name: 'role', description: '@role to give unverified users', type: 8, required: true }
+    ]},
+    { name: 'sticky', description: 'Create sticky message', default_member_permissions: '8', options: [
+      { name: 'channel', description: 'Channel for sticky', type: 7, required: true },
+      { name: 'message', description: 'Message to keep at bottom', type: 3, required: true }
+    ]},
+    { name: 'removesticky', description: 'Remove sticky message', default_member_permissions: '8', options: [
+      { name: 'channel', description: 'Channel with sticky', type: 7, required: true }
+    ]},
+    
+    // Data Export
+    { name: 'export', description: 'Export server data', default_member_permissions: '8', options: [
+      { name: 'type', description: 'Data type to export', type: 3, required: true, choices: [
+        { name: 'Points', value: 'points' },
+        { name: 'Verifications', value: 'verifications' },
+        { name: 'Warnings', value: 'warnings' },
+        { name: 'Blacklists', value: 'blacklists' }
+      ]}
     ]}
   ];
 
@@ -1351,27 +1434,66 @@ client.on('interactionCreate', async interaction => {
   
   const { commandName, guildId, user, options } = interaction;
 
+  // Commands that don't require activation
+  const noActivationRequired = ['activate', 'license'];
+  
+  // Check if server is activated (except for activate and license commands)
+  if (!noActivationRequired.includes(commandName)) {
+    const activated = await pool.query('SELECT license_key FROM guild_licenses WHERE guild_id = $1', [guildId]);
+    if (activated.rows.length === 0) {
+      return interaction.reply({ 
+        content: '❌ **Bot Not Activated**\n\nThis server needs a license to use RoNexus.\n\n**To activate:**\n1. Purchase a license at [whop.com/ronexus](https://whop.com/ronexus)\n2. Use `/activate YOUR-LICENSE-KEY`\n\n**Need help?** Join our [support server](https://discord.gg/support)',
+        ephemeral: true 
+      });
+    }
+  }
+
   if (commandName === 'activate') {
     const license = options.getString('license');
     
     try {
+      // Rate limiting: Max 5 attempts per hour
+      const attempts = await pool.query(
+        'SELECT COUNT(*) FROM activation_attempts WHERE guild_id = $1 AND user_id = $2 AND attempt_time > NOW() - INTERVAL \'1 hour\'',
+        [guildId, user.id]
+      );
+      
+      if (parseInt(attempts.rows[0].count) >= 5) {
+        return interaction.reply({ 
+          content: '❌ Too many activation attempts. Please wait 1 hour before trying again.\n\n**Note:** If you need help, join our support server.',
+          flags: [MessageFlags.Ephemeral]
+        });
+      }
+      
+      // Log attempt
+      await pool.query(
+        'INSERT INTO activation_attempts (guild_id, user_id, success) VALUES ($1, $2, $3)',
+        [guildId, user.id, false]
+      );
+      
       // Check if license exists and get limits
       const limitCheck = await checkLicenseLimits(license, guildId);
       
       if (!limitCheck.allowed) {
-        return interaction.reply({ content: `❌ ${limitCheck.reason}`, ephemeral: true });
+        return interaction.reply({ content: `❌ ${limitCheck.reason}`, flags: [MessageFlags.Ephemeral] });
       }
       
       // Check if guild already activated
       const guildCheck = await pool.query('SELECT * FROM guild_licenses WHERE guild_id = $1', [guildId]);
       if (guildCheck.rows.length > 0) {
-        return interaction.reply({ content: '✅ This server is already activated!', ephemeral: true });
+        return interaction.reply({ content: '✅ This server is already activated!', flags: [MessageFlags.Ephemeral] });
       }
       
       // Activate the license for this guild
       await pool.query(
         'INSERT INTO guild_licenses (guild_id, license_key) VALUES ($1, $2)',
         [guildId, license]
+      );
+      
+      // Mark attempt as successful
+      await pool.query(
+        'UPDATE activation_attempts SET success = true WHERE guild_id = $1 AND user_id = $2 AND attempt_time = (SELECT MAX(attempt_time) FROM activation_attempts WHERE guild_id = $1 AND user_id = $2)',
+        [guildId, user.id]
       );
       
       const tierInfo = await getTierInfo(limitCheck.tier);
@@ -1387,7 +1509,7 @@ client.on('interactionCreate', async interaction => {
       ]});
     } catch (e) { 
       console.error('Activation error:', e);
-      return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true }); 
+      return interaction.reply({ content: `❌ ${e.message}`, flags: [MessageFlags.Ephemeral] }); 
     }
   }
 
@@ -1567,6 +1689,54 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  if (commandName === 'update') {
+    await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+    
+    try {
+      // Check if user is verified
+      const verified = await pool.query(
+        'SELECT roblox_id, roblox_username FROM verified_users WHERE guild_id = $1 AND user_id = $2',
+        [guildId, user.id]
+      );
+      
+      if (verified.rows.length === 0) {
+        return interaction.editReply('❌ You need to verify first! Use `/verify`');
+      }
+      
+      const { roblox_id, roblox_username } = verified.rows[0];
+      
+      // Get rank abbreviation
+      const configRes = await pool.query('SELECT rank_abbreviation FROM guild_config WHERE guild_id = $1', [guildId]);
+      const abbreviation = configRes.rows.length > 0 && configRes.rows[0].rank_abbreviation 
+        ? configRes.rows[0].rank_abbreviation 
+        : null;
+      
+      // Update nickname
+      await updateNickname(interaction.guild, user.id, roblox_username, abbreviation);
+      
+      // Give verified role
+      await giveVerifiedRole(interaction.guild, user.id);
+      
+      // Sync group ranks
+      const groups = await pool.query('SELECT group_id, api_key FROM roblox_groups WHERE guild_id = $1', [guildId]);
+      let ranksUpdated = 0;
+      
+      for (const group of groups.rows) {
+        try {
+          await updateUserRank(interaction.guild, user.id, group.group_id, group.api_key);
+          ranksUpdated++;
+        } catch (e) {
+          console.error(`Failed to update rank for group ${group.group_id}:`, e.message);
+        }
+      }
+      
+      return interaction.editReply(`✅ Profile updated!\n\n• Nickname refreshed\n• Verified role added\n• ${ranksUpdated} group rank(s) synced`);
+    } catch (e) {
+      console.error('Update error:', e);
+      return interaction.editReply(`❌ Error updating profile: ${e.message}`);
+    }
+  }
+
   if (commandName === 'help') {
     const embed = new EmbedBuilder()
       .setColor('#00a6ff')
@@ -1648,7 +1818,7 @@ client.on('interactionCreate', async interaction => {
     
     try {
       const [recentVerifications, topEarners, recentWarnings] = await Promise.all([
-        pool.query('SELECT COUNT(*) FROM verified_users WHERE guild_id = $1 AND created_at > NOW() - INTERVAL \'7 days\'', [guildId]),
+        pool.query('SELECT COUNT(*) FROM verified_users WHERE guild_id = $1 AND verified_at > NOW() - INTERVAL \'7 days\'', [guildId]),
         pool.query('SELECT user_id, points FROM user_points WHERE guild_id = $1 ORDER BY points DESC LIMIT 5', [guildId]),
         pool.query('SELECT COUNT(*) FROM warnings WHERE guild_id = $1 AND timestamp > NOW() - INTERVAL \'7 days\'', [guildId])
       ]);
@@ -1927,16 +2097,7 @@ client.on('interactionCreate', async interaction => {
     await checkAndPromote(guildId, targetId, newPoints.rows[0].points);
     
     // Log points addition
-    await logActivity(guildId, new EmbedBuilder()
-      .setColor('#FFD700')
-      .setTitle('💰 Points Awarded')
-      .setDescription(`<@${user.id}> awarded **${amount}** points to <@${targetId}>`)
-      .addFields(
-        { name: 'Reason', value: reason, inline: false },
-        { name: 'New Balance', value: `${newPoints.rows[0].points} points`, inline: true }
-      )
-      .setTimestamp()
-    );
+    await logActivity(guildId, 'points_added', `💰 <@${user.id}> awarded **${amount}** points to <@${targetId}>\n**Reason:** ${reason}\n**Balance:** ${oldPoints} → ${newPoints.rows[0].points}`);
     
     return interaction.reply({ 
       content: `✅ Awarded **${amount}** points to <@${targetId}>\n\n**Reason:** ${reason}\n**Old Balance:** ${oldPoints} points\n**New Balance:** ${newPoints.rows[0].points} points\n**Change:** +${amount}` 
@@ -1980,6 +2141,9 @@ client.on('interactionCreate', async interaction => {
     const newPoints = newPointsRes.rows.length > 0 ? newPointsRes.rows[0].points : 0;
     
     const actualRemoved = oldPoints - newPoints;
+    
+    // Log points removal
+    await logActivity(guildId, 'points_removed', `💸 <@${user.id}> removed **${actualRemoved}** points from <@${targetId}>\n**Reason:** ${reason}\n**Balance:** ${oldPoints} → ${newPoints}`);
     
     return interaction.reply({ 
       content: `✅ Removed **${actualRemoved}** points from <@${targetId}>\n\n**Reason:** ${reason}\n**Old Balance:** ${oldPoints} points\n**New Balance:** ${newPoints} points\n**Change:** -${actualRemoved}` 
@@ -2260,12 +2424,21 @@ client.on('interactionCreate', async interaction => {
     const target = options.getUser('user');
     const reason = options.getString('reason') || 'No reason provided';
     
+    // Prevent self-kick
+    if (target.id === user.id) {
+      return interaction.reply({ content: '❌ You cannot kick yourself!', flags: [MessageFlags.Ephemeral] });
+    }
+    
     try {
       const member = await interaction.guild.members.fetch(target.id);
       await member.kick(reason);
+      
+      // Log kick
+      await logActivity(guildId, 'kick', `👢 ${target} kicked by <@${user.id}>\n**Reason:** ${reason}`);
+      
       return interaction.reply({ content: `👢 Kicked ${target}\n**Reason:** ${reason}` });
     } catch (e) { 
-      return interaction.reply({ content: '❌ Cannot kick this user!', ephemeral: true }); 
+      return interaction.reply({ content: '❌ Cannot kick this user!', flags: [MessageFlags.Ephemeral] }); 
     }
   }
 
@@ -2273,8 +2446,17 @@ client.on('interactionCreate', async interaction => {
     const target = options.getUser('user');
     const reason = options.getString('reason') || 'No reason provided';
     
+    // Prevent self-ban
+    if (target.id === user.id) {
+      return interaction.reply({ content: '❌ You cannot ban yourself!', flags: [MessageFlags.Ephemeral] });
+    }
+    
     try {
       await interaction.guild.members.ban(target, { reason });
+      
+      // Log ban
+      await logActivity(guildId, 'ban', `🔨 ${target} banned by <@${user.id}>\n**Reason:** ${reason}`);
+      
       return interaction.reply({ content: `🔨 Banned ${target}\n**Reason:** ${reason}` });
     } catch (e) { 
       return interaction.reply({ content: '❌ Cannot ban this user!', ephemeral: true }); 
@@ -2292,13 +2474,7 @@ client.on('interactionCreate', async interaction => {
       );
       
       // Log warning
-      await logActivity(guildId, new EmbedBuilder()
-        .setColor('#FFA500')
-        .setTitle('⚠️ User Warned')
-        .setDescription(`${target} warned by <@${user.id}>`)
-        .addFields({ name: 'Reason', value: reason })
-        .setTimestamp()
-      );
+      await logActivity(guildId, 'warning', `⚠️ ${target} warned by <@${user.id}>\n**Reason:** ${reason}`);
       
       return interaction.reply({ content: `⚠️ Warned ${target}\n**Reason:** ${reason}` });
     } catch (e) {
@@ -2362,6 +2538,9 @@ client.on('interactionCreate', async interaction => {
     try {
       await target.send(`**Message from ${interaction.guild.name} Staff:**\n\n${message}`);
       
+      // Log activity
+      await logActivity(guildId, 'dm_sent', `DM sent to ${target.username} by ${user.username}`);
+      
       return interaction.reply({ 
         content: `✅ DM sent to ${target.username}`, 
         ephemeral: true 
@@ -2371,6 +2550,288 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({ content: `❌ Cannot send DM to ${target.username}. They may have DMs disabled.`, ephemeral: true });
       }
       return interaction.reply({ content: `❌ Failed to send DM: ${e.message}`, ephemeral: true });
+    }
+  }
+
+  if (commandName === 'help') {
+    const embed = new EmbedBuilder()
+      .setColor('#00a6ff')
+      .setTitle('📚 RoNexus Commands')
+      .setDescription('Complete command list with examples')
+      .addFields(
+        { 
+          name: '🔐 Verification & Setup', 
+          value: '`/verify` - Verify your Roblox account\n`/profile @user` - View user profile\n`/setup` - View setup guide\n`/addgroup GROUP_ID API_KEY` - Add Roblox group\n`/maprank @Role RANK_ID` - Map Discord role to Roblox rank' 
+        },
+        { 
+          name: '💰 Points System', 
+          value: '`/points @user` - Check points\n`/addpoints @user 50 reason:Helped` - Award points\n`/removepoints @user 25 reason:Inactive` - Remove points\n`/leaderboard` - View top members\n`/addrank @Role 100 "Member" [CD]` - Add point rank' 
+        },
+        { 
+          name: '🔍 Security', 
+          value: '`/bgcheck @user` - Background check\n`/viewblacklists` - View blacklists\n`/blacklist-user USERNAME reason` - Blacklist user\n`/blacklist-group GROUP_ID reason` - Blacklist group' 
+        },
+        { 
+          name: '⚙️ Configuration', 
+          value: '`/setwelcome #channel message` - Set welcome\n`/setlog #channel` - Set activity log\n`/setunverified @Role` - Auto-role for unverified\n`/sticky #channel message` - Create sticky message' 
+        },
+        { 
+          name: '📊 Statistics & Data', 
+          value: '`/stats` - Server statistics\n`/insights` - Detailed insights (Admin)\n`/export points` - Export data as CSV (Admin)' 
+        },
+        { 
+          name: '🛠️ Moderation', 
+          value: '`/warn @user reason` - Warn user\n`/viewwarns @user` - View warnings\n`/kick @user reason` - Kick user\n`/ban @user reason` - Ban user' 
+        },
+        { 
+          name: '📢 Messaging', 
+          value: '`/announce #channel message` - Post announcement\n`/postembed #channel title message` - Post embed\n`/dm @user message` - Send DM' 
+        }
+      )
+      .setFooter({ text: 'Use /setup for detailed setup instructions' });
+    
+    return interaction.reply({ embeds: [embed], ephemeral: true });
+  }
+
+  if (commandName === 'stats') {
+    try {
+      const [verified, groups, points, warns] = await Promise.all([
+        pool.query('SELECT COUNT(*) FROM verified_users WHERE guild_id = $1', [guildId]),
+        pool.query('SELECT COUNT(*) FROM roblox_groups WHERE guild_id = $1', [guildId]),
+        pool.query('SELECT SUM(points) as total, AVG(points) as avg FROM user_points WHERE guild_id = $1', [guildId]),
+        pool.query('SELECT COUNT(*) FROM warnings WHERE guild_id = $1', [guildId])
+      ]);
+      
+      const totalVerified = parseInt(verified.rows[0].count);
+      const totalGroups = parseInt(groups.rows[0].count);
+      const totalPoints = parseInt(points.rows[0].total) || 0;
+      const avgPoints = Math.round(parseFloat(points.rows[0].avg)) || 0;
+      const totalWarns = parseInt(warns.rows[0].count);
+      const memberCount = interaction.guild.memberCount;
+      const verificationRate = totalVerified > 0 ? ((totalVerified / memberCount) * 100).toFixed(1) : 0;
+      
+      const embed = new EmbedBuilder()
+        .setColor('#00a6ff')
+        .setTitle('📊 Server Statistics')
+        .setDescription(`**${interaction.guild.name}**`)
+        .addFields(
+          { name: '👥 Members', value: `${memberCount} total`, inline: true },
+          { name: '✅ Verified', value: `${totalVerified} (${verificationRate}%)`, inline: true },
+          { name: '🔗 Groups', value: `${totalGroups} connected`, inline: true },
+          { name: '💰 Total Points', value: `${totalPoints.toLocaleString()}`, inline: true },
+          { name: '📊 Avg Points', value: `${avgPoints}`, inline: true },
+          { name: '⚠️ Warnings', value: `${totalWarns}`, inline: true }
+        )
+        .setFooter({ text: 'Use /insights for detailed analytics' })
+        .setTimestamp();
+      
+      return interaction.reply({ embeds: [embed] });
+    } catch (e) {
+      return interaction.reply({ content: `❌ Error: ${e.message}`, ephemeral: true });
+    }
+  }
+
+  if (commandName === 'insights') {
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      const [recentVerifications, topMembers, groupData, activityData] = await Promise.all([
+        pool.query('SELECT COUNT(*) FROM verified_users WHERE guild_id = $1 AND verified_at > NOW() - INTERVAL \'7 days\'', [guildId]),
+        pool.query('SELECT user_id, points FROM user_points WHERE guild_id = $1 ORDER BY points DESC LIMIT 5', [guildId]),
+        pool.query('SELECT COUNT(*) FROM roblox_groups WHERE guild_id = $1', [guildId]),
+        pool.query('SELECT COUNT(*) FROM warnings WHERE guild_id = $1 AND timestamp > NOW() - INTERVAL \'30 days\'', [guildId])
+      ]);
+      
+      const recentVerifs = parseInt(recentVerifications.rows[0].count);
+      const totalGroups = parseInt(groupData.rows[0].count);
+      const recentWarnings = parseInt(activityData.rows[0].count);
+      
+      let topMembersList = '📋 No data yet';
+      if (topMembers.rows.length > 0) {
+        topMembersList = topMembers.rows.map((m, i) => `**${i + 1}.** <@${m.user_id}> - ${m.points} points`).join('\n');
+      }
+      
+      const embed = new EmbedBuilder()
+        .setColor('#667eea')
+        .setTitle('📈 Server Insights')
+        .setDescription(`**${interaction.guild.name}** - Detailed Analytics`)
+        .addFields(
+          { name: '📅 Recent Activity (7 Days)', value: `${recentVerifs} new verifications`, inline: false },
+          { name: '🏆 Top Members', value: topMembersList, inline: false },
+          { name: '🔗 Integration Health', value: `${totalGroups} Roblox groups connected`, inline: true },
+          { name: '⚠️ Moderation (30 Days)', value: `${recentWarnings} warnings issued`, inline: true }
+        )
+        .setFooter({ text: 'Enterprise plan includes advanced analytics dashboard' })
+        .setTimestamp();
+      
+      return interaction.editReply({ embeds: [embed] });
+    } catch (e) {
+      return interaction.editReply({ content: `❌ Error: ${e.message}` });
+    }
+  }
+
+  if (commandName === 'setwelcome') {
+    const channel = options.getChannel('channel');
+    const message = options.getString('message');
+    
+    try {
+      await pool.query(
+        'INSERT INTO guild_config (guild_id, welcome_channel_id, welcome_message) VALUES ($1, $2, $3) ON CONFLICT (guild_id) DO UPDATE SET welcome_channel_id = $2, welcome_message = $3',
+        [guildId, channel.id, message]
+      );
+      
+      return interaction.reply({ 
+        content: `✅ Welcome message set for ${channel}\n\n**Preview:** ${message.replace('{user}', interaction.user.toString()).replace('{username}', interaction.user.username)}`, 
+        ephemeral: true 
+      });
+    } catch (e) {
+      return interaction.reply({ content: `❌ Error: ${e.message}`, ephemeral: true });
+    }
+  }
+
+  if (commandName === 'setlog') {
+    const channel = options.getChannel('channel');
+    
+    try {
+      await pool.query(
+        'INSERT INTO guild_config (guild_id, log_channel_id) VALUES ($1, $2) ON CONFLICT (guild_id) DO UPDATE SET log_channel_id = $2',
+        [guildId, channel.id]
+      );
+      
+      await channel.send({
+        embeds: [new EmbedBuilder()
+          .setColor('#00FF00')
+          .setTitle('📋 Activity Logging Enabled')
+          .setDescription('This channel will now receive activity logs for:\n• Verifications\n• Rank changes\n• Points awarded/removed\n• Warnings & moderation\n• Configuration changes')
+          .setFooter({ text: 'RoNexus Activity Log' })
+          .setTimestamp()
+        ]
+      });
+      
+      return interaction.reply({ content: `✅ Activity logging enabled in ${channel}`, ephemeral: true });
+    } catch (e) {
+      return interaction.reply({ content: `❌ Error: ${e.message}`, ephemeral: true });
+    }
+  }
+
+  if (commandName === 'setunverified') {
+    const role = options.getRole('role');
+    
+    try {
+      await pool.query(
+        'INSERT INTO guild_config (guild_id, unverified_role_id) VALUES ($1, $2) ON CONFLICT (guild_id) DO UPDATE SET unverified_role_id = $2',
+        [guildId, role.id]
+      );
+      
+      return interaction.reply({ 
+        content: `✅ Unverified role set to ${role}\n\nNew members will automatically get this role until they verify.`, 
+        ephemeral: true 
+      });
+    } catch (e) {
+      return interaction.reply({ content: `❌ Error: ${e.message}`, ephemeral: true });
+    }
+  }
+
+  if (commandName === 'sticky') {
+    const channel = options.getChannel('channel');
+    const message = options.getString('message');
+    
+    try {
+      const msg = await channel.send(message);
+      
+      await pool.query(
+        'INSERT INTO sticky_messages (guild_id, channel_id, message_content, last_message_id) VALUES ($1, $2, $3, $4) ON CONFLICT (guild_id, channel_id) DO UPDATE SET message_content = $3, last_message_id = $4',
+        [guildId, channel.id, message, msg.id]
+      );
+      
+      return interaction.reply({ content: `✅ Sticky message created in ${channel}`, ephemeral: true });
+    } catch (e) {
+      return interaction.reply({ content: `❌ Error: ${e.message}`, ephemeral: true });
+    }
+  }
+
+  if (commandName === 'removesticky') {
+    const channel = options.getChannel('channel');
+    
+    try {
+      const result = await pool.query(
+        'DELETE FROM sticky_messages WHERE guild_id = $1 AND channel_id = $2 RETURNING last_message_id',
+        [guildId, channel.id]
+      );
+      
+      if (result.rows.length === 0) {
+        return interaction.reply({ content: `❌ No sticky message found in ${channel}`, ephemeral: true });
+      }
+      
+      // Try to delete the last sticky message
+      try {
+        const lastMsg = await channel.messages.fetch(result.rows[0].last_message_id);
+        await lastMsg.delete();
+      } catch (e) {
+        // Message may already be deleted, that's okay
+      }
+      
+      return interaction.reply({ content: `✅ Sticky message removed from ${channel}`, ephemeral: true });
+    } catch (e) {
+      return interaction.reply({ content: `❌ Error: ${e.message}`, ephemeral: true });
+    }
+  }
+
+  if (commandName === 'export') {
+    const type = options.getString('type');
+    await interaction.deferReply({ ephemeral: true });
+    
+    try {
+      let data = '';
+      let filename = '';
+      
+      if (type === 'points') {
+        const result = await pool.query(
+          'SELECT user_id, points FROM user_points WHERE guild_id = $1 ORDER BY points DESC',
+          [guildId]
+        );
+        data = 'User ID,Points\n' + result.rows.map(r => `${r.user_id},${r.points}`).join('\n');
+        filename = `points_${guildId}_${Date.now()}.csv`;
+      } else if (type === 'verifications') {
+        const result = await pool.query(
+          'SELECT user_id, roblox_id, roblox_username, verified_at FROM verified_users WHERE guild_id = $1 ORDER BY verified_at DESC',
+          [guildId]
+        );
+        data = 'Discord ID,Roblox ID,Roblox Username,Verified At\n' + 
+               result.rows.map(r => `${r.user_id},${r.roblox_id},${r.roblox_username},${r.verified_at}`).join('\n');
+        filename = `verifications_${guildId}_${Date.now()}.csv`;
+      } else if (type === 'warnings') {
+        const result = await pool.query(
+          'SELECT user_id, reason, moderator_id, timestamp FROM warnings WHERE guild_id = $1 ORDER BY timestamp DESC',
+          [guildId]
+        );
+        data = 'User ID,Reason,Moderator ID,Timestamp\n' + 
+               result.rows.map(r => `${r.user_id},"${r.reason}",${r.moderator_id},${r.timestamp}`).join('\n');
+        filename = `warnings_${guildId}_${Date.now()}.csv`;
+      } else if (type === 'blacklists') {
+        const users = await pool.query(
+          'SELECT roblox_username, reason FROM blacklisted_users WHERE guild_id = $1',
+          [guildId]
+        );
+        const groups = await pool.query(
+          'SELECT group_name, group_id, reason FROM blacklisted_groups WHERE guild_id = $1',
+          [guildId]
+        );
+        data = 'Type,Name/ID,Reason\n' + 
+               users.rows.map(r => `User,${r.roblox_username},"${r.reason}"`).join('\n') + '\n' +
+               groups.rows.map(r => `Group,"${r.group_name} (${r.group_id})","${r.reason}"`).join('\n');
+        filename = `blacklists_${guildId}_${Date.now()}.csv`;
+      }
+      
+      const buffer = Buffer.from(data, 'utf-8');
+      const attachment = new AttachmentBuilder(buffer, { name: filename });
+      
+      return interaction.editReply({ 
+        content: `✅ Data exported successfully`,
+        files: [attachment]
+      });
+    } catch (e) {
+      return interaction.editReply({ content: `❌ Export failed: ${e.message}` });
     }
   }
 });
@@ -2415,23 +2876,31 @@ app.get('/auth/callback', async (req, res) => {
         [pending.guildId]
       );
       
-      // Get the rank abbreviation
-      const configRes = await pool.query('SELECT rank_abbreviation FROM guild_config WHERE guild_id = $1', [pending.guildId]);
+      // Get config
+      const configRes = await pool.query('SELECT rank_abbreviation, unverified_role_id FROM guild_config WHERE guild_id = $1', [pending.guildId]);
       const abbreviation = configRes.rows.length > 0 && configRes.rows[0].rank_abbreviation 
         ? configRes.rows[0].rank_abbreviation 
         : null;
+      const unverifiedRoleId = configRes.rows.length > 0 ? configRes.rows[0].unverified_role_id : null;
       
       await updateNickname(guild, pending.userId, robloxUsername, abbreviation);
       await giveVerifiedRole(guild, pending.userId);
       
+      // Remove unverified role
+      if (unverifiedRoleId) {
+        try {
+          const member = await guild.members.fetch(pending.userId);
+          const unverifiedRole = guild.roles.cache.get(unverifiedRoleId);
+          if (unverifiedRole && member.roles.cache.has(unverifiedRoleId)) {
+            await member.roles.remove(unverifiedRole);
+          }
+        } catch (e) {
+          console.error('Failed to remove unverified role:', e);
+        }
+      }
+      
       // Log verification
-      await logActivity(pending.guildId, new EmbedBuilder()
-        .setColor('#00FF00')
-        .setTitle('✅ New Verification')
-        .setDescription(`<@${pending.userId}> verified as **${robloxUsername}**`)
-        .addFields({ name: 'Roblox ID', value: robloxId, inline: true })
-        .setTimestamp()
-      );
+      await logActivity(pending.guildId, 'verification', `✅ <@${pending.userId}> verified as **${robloxUsername}** (ID: ${robloxId})`);
     }
     
     pendingVerifications.delete(state);
@@ -2772,5 +3241,79 @@ app.listen(PORT, () => console.log(`🌐 Server running on port ${PORT}`));
 setInterval(() => {
   console.log('🔄 Keep-alive ping');
 }, 300000);
+
+// ============================================
+// MEMBER JOIN EVENT
+// ============================================
+client.on('guildMemberAdd', async member => {
+  try {
+    const guildId = member.guild.id;
+    const config = await pool.query('SELECT welcome_channel_id, welcome_message, unverified_role_id FROM guild_config WHERE guild_id = $1', [guildId]);
+    
+    if (config.rows.length === 0) return;
+    
+    const { welcome_channel_id, welcome_message, unverified_role_id } = config.rows[0];
+    
+    // Send welcome message
+    if (welcome_channel_id && welcome_message) {
+      const channel = member.guild.channels.cache.get(welcome_channel_id);
+      if (channel) {
+        const msg = welcome_message
+          .replace('{user}', member.toString())
+          .replace('{username}', member.user.username);
+        await channel.send(msg);
+      }
+    }
+    
+    // Give unverified role
+    if (unverified_role_id) {
+      const role = member.guild.roles.cache.get(unverified_role_id);
+      if (role) {
+        await member.roles.add(role);
+      }
+    }
+  } catch (e) {
+    console.error('Member join error:', e);
+  }
+});
+
+// ============================================
+// MESSAGE CREATE EVENT (for sticky messages)
+// ============================================
+client.on('messageCreate', async message => {
+  if (message.author.bot) return;
+  
+  try {
+    const sticky = await pool.query(
+      'SELECT message_content, last_message_id FROM sticky_messages WHERE guild_id = $1 AND channel_id = $2',
+      [message.guild.id, message.channel.id]
+    );
+    
+    if (sticky.rows.length === 0) return;
+    
+    const { message_content, last_message_id } = sticky.rows[0];
+    
+    // Delete old sticky message
+    if (last_message_id) {
+      try {
+        const oldMsg = await message.channel.messages.fetch(last_message_id);
+        await oldMsg.delete();
+      } catch (e) {
+        // Old message already deleted, that's okay
+      }
+    }
+    
+    // Send new sticky message
+    const newMsg = await message.channel.send(message_content);
+    
+    // Update database with new message ID
+    await pool.query(
+      'UPDATE sticky_messages SET last_message_id = $1 WHERE guild_id = $2 AND channel_id = $3',
+      [newMsg.id, message.guild.id, message.channel.id]
+    );
+  } catch (e) {
+    console.error('Sticky message error:', e);
+  }
+});
 
 client.login(process.env.DISCORD_TOKEN);
