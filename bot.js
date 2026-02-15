@@ -76,19 +76,41 @@ async function ensureTablesExist() {
       CREATE TABLE IF NOT EXISTS guild_config (
         guild_id VARCHAR(20) PRIMARY KEY,
         verified_role_id VARCHAR(20),
-        rank_abbreviation VARCHAR(10)
+        rank_abbreviation VARCHAR(10),
+        welcome_channel_id VARCHAR(20),
+        welcome_message TEXT,
+        log_channel_id VARCHAR(20),
+        unverified_role_id VARCHAR(20)
       );
       
-      -- Ensure rank_abbreviation column exists (for existing databases)
+      -- Ensure all columns exist
       DO $$ 
       BEGIN
-        IF NOT EXISTS (
-          SELECT 1 FROM information_schema.columns 
-          WHERE table_name='guild_config' AND column_name='rank_abbreviation'
-        ) THEN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='guild_config' AND column_name='rank_abbreviation') THEN
           ALTER TABLE guild_config ADD COLUMN rank_abbreviation VARCHAR(10);
         END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='guild_config' AND column_name='welcome_channel_id') THEN
+          ALTER TABLE guild_config ADD COLUMN welcome_channel_id VARCHAR(20);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='guild_config' AND column_name='welcome_message') THEN
+          ALTER TABLE guild_config ADD COLUMN welcome_message TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='guild_config' AND column_name='log_channel_id') THEN
+          ALTER TABLE guild_config ADD COLUMN log_channel_id VARCHAR(20);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='guild_config' AND column_name='unverified_role_id') THEN
+          ALTER TABLE guild_config ADD COLUMN unverified_role_id VARCHAR(20);
+        END IF;
       END $$;
+      
+      CREATE TABLE IF NOT EXISTS sticky_messages (
+        id SERIAL PRIMARY KEY,
+        guild_id VARCHAR(20) NOT NULL,
+        channel_id VARCHAR(20) NOT NULL,
+        message_content TEXT NOT NULL,
+        last_message_id VARCHAR(20),
+        UNIQUE(guild_id, channel_id)
+      );
       
       CREATE TABLE IF NOT EXISTS verified_users (
         id SERIAL PRIMARY KEY,
@@ -292,6 +314,21 @@ async function getProfilePicture(userId) {
     return null;
   } catch (e) {
     return null;
+  }
+}
+
+async function logActivity(guildId, embed) {
+  try {
+    const config = await pool.query('SELECT log_channel_id FROM guild_config WHERE guild_id = $1', [guildId]);
+    
+    if (config.rows.length > 0 && config.rows[0].log_channel_id) {
+      const channel = client.channels.cache.get(config.rows[0].log_channel_id);
+      if (channel && channel.isTextBased()) {
+        await channel.send({ embeds: [embed] });
+      }
+    }
+  } catch (e) {
+    // Silently fail logging
   }
 }
 
@@ -621,6 +658,20 @@ async function giveVerifiedRole(guild, userId) {
     }
     
     await member.roles.add(verifiedRole);
+    
+    // Remove unverified role if it exists
+    const config = await pool.query(
+      'SELECT unverified_role_id FROM guild_config WHERE guild_id = $1',
+      [guild.id]
+    );
+    
+    if (config.rows.length > 0 && config.rows[0].unverified_role_id) {
+      const unverifiedRole = guild.roles.cache.get(config.rows[0].unverified_role_id);
+      if (unverifiedRole && member.roles.cache.has(unverifiedRole.id)) {
+        await member.roles.remove(unverifiedRole);
+      }
+    }
+    
     return true;
   } catch (e) {
     console.error('❌ Verified role error:', e.message);
@@ -750,6 +801,25 @@ client.once('ready', async () => {
     { name: 'verify', description: 'Verify Roblox account' },
     { name: 'profile', description: 'View user profile', options: [{ name: 'user', description: '@user or username', type: 3, required: false }] },
     { name: 'setup', description: 'Setup guide', default_member_permissions: '8' },
+    { name: 'help', description: 'View all commands and examples' },
+    { name: 'stats', description: 'View server statistics', default_member_permissions: '8' },
+    { name: 'insights', description: 'View server insights', default_member_permissions: '8' },
+    
+    // Configuration
+    { name: 'setwelcome', description: 'Set welcome message', default_member_permissions: '8', options: [
+      { name: 'channel', description: 'Welcome channel', type: 7, required: true },
+      { name: 'message', description: 'Welcome message ({user} = mention, {server} = server name)', type: 3, required: true }
+    ]},
+    { name: 'setlog', description: 'Set activity log channel', default_member_permissions: '8', options: [
+      { name: 'channel', description: 'Log channel', type: 7, required: true }
+    ]},
+    { name: 'setunverified', description: 'Set unverified role', default_member_permissions: '8', options: [
+      { name: 'role', description: 'Role for unverified users', type: 8, required: true }
+    ]},
+    { name: 'sticky', description: 'Create sticky message', default_member_permissions: '8', options: [
+      { name: 'channel', description: 'Channel for sticky', type: 7, required: true },
+      { name: 'message', description: 'Sticky message', type: 3, required: true }
+    ]},
     
     // Config - MERGED setabbreviation into addrank
     { name: 'addgroup', description: 'Add Roblox group', default_member_permissions: '8', options: [
@@ -836,6 +906,95 @@ client.once('ready', async () => {
 
   await client.application.commands.set(commands);
   console.log('✅ Commands registered!');
+});
+
+// ============================================
+// MEMBER JOIN EVENT
+// ============================================
+client.on('guildMemberAdd', async (member) => {
+  try {
+    const guildId = member.guild.id;
+    
+    // Get guild config
+    const config = await pool.query(
+      'SELECT unverified_role_id, welcome_channel_id, welcome_message FROM guild_config WHERE guild_id = $1',
+      [guildId]
+    );
+    
+    if (config.rows.length > 0) {
+      const { unverified_role_id, welcome_channel_id, welcome_message } = config.rows[0];
+      
+      // Give unverified role
+      if (unverified_role_id) {
+        try {
+          const role = member.guild.roles.cache.get(unverified_role_id);
+          if (role) {
+            await member.roles.add(role);
+            console.log(`✅ Gave unverified role to ${member.user.tag}`);
+          }
+        } catch (e) {
+          console.error('Failed to give unverified role:', e.message);
+        }
+      }
+      
+      // Send welcome message
+      if (welcome_channel_id && welcome_message) {
+        try {
+          const channel = member.guild.channels.cache.get(welcome_channel_id);
+          if (channel && channel.isTextBased()) {
+            const formattedMessage = welcome_message
+              .replace(/{user}/g, `<@${member.id}>`)
+              .replace(/{server}/g, member.guild.name);
+            
+            await channel.send(formattedMessage);
+          }
+        } catch (e) {
+          console.error('Failed to send welcome message:', e.message);
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Member join event error:', e);
+  }
+});
+
+// ============================================
+// STICKY MESSAGES HANDLER
+// ============================================
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
+  
+  try {
+    const sticky = await pool.query(
+      'SELECT message_content, last_message_id FROM sticky_messages WHERE guild_id = $1 AND channel_id = $2',
+      [message.guild.id, message.channel.id]
+    );
+    
+    if (sticky.rows.length > 0) {
+      const { message_content, last_message_id } = sticky.rows[0];
+      
+      // Delete old sticky if it exists
+      if (last_message_id) {
+        try {
+          const oldMsg = await message.channel.messages.fetch(last_message_id);
+          await oldMsg.delete();
+        } catch (e) {
+          // Ignore if message already deleted
+        }
+      }
+      
+      // Post new sticky
+      const newSticky = await message.channel.send(message_content);
+      
+      // Update database with new message ID
+      await pool.query(
+        'UPDATE sticky_messages SET last_message_id = $1 WHERE guild_id = $2 AND channel_id = $3',
+        [newSticky.id, message.guild.id, message.channel.id]
+      );
+    }
+  } catch (e) {
+    // Silently fail for sticky messages
+  }
 });
 
 // ============================================
@@ -1234,7 +1393,18 @@ client.on('interactionCreate', async interaction => {
 
   const activated = await pool.query('SELECT * FROM guild_licenses WHERE guild_id = $1', [guildId]);
   if (activated.rows.length === 0 && commandName !== 'activate') {
-    return interaction.reply({ content: '❌ Not activated! Use `/activate RONEXUS-LICENSE-KEY`', ephemeral: true });
+    return interaction.reply({ 
+      embeds: [new EmbedBuilder()
+        .setColor('#FF0000')
+        .setTitle('🔒 Activation Required')
+        .setDescription('This server needs to be activated with a license key before using RoNexus.')
+        .addFields(
+          { name: '📝 How to Activate', value: 'Use `/activate YOUR-LICENSE-KEY`\n\nDon\'t have a license? Visit **ronexus.org** to purchase!' },
+          { name: '💰 Pricing', value: '🥉 Starter: $3/month\n🥈 Professional: $12/month\n🥇 Enterprise: $35/month' }
+        )
+      ],
+      ephemeral: true 
+    });
   }
 
   if (commandName === 'license') {
@@ -1394,6 +1564,193 @@ client.on('interactionCreate', async interaction => {
     } catch (e) {
       console.error('Profile error:', e);
       return interaction.editReply(`❌ Error fetching profile: ${e.message}`);
+    }
+  }
+
+  if (commandName === 'help') {
+    const embed = new EmbedBuilder()
+      .setColor('#00a6ff')
+      .setTitle('📚 RoNexus Commands')
+      .setDescription('Complete command reference with examples')
+      .addFields(
+        { 
+          name: '🔐 Verification', 
+          value: '`/verify` - Link Roblox account\n`/profile` - View profile\n`/bgcheck @user` - Background check' 
+        },
+        { 
+          name: '⚙️ Setup', 
+          value: '`/activate KEY` - Activate bot\n`/setup` - Setup guide\n`/addgroup ID KEY` - Add Roblox group\n`/maprank @Role 255` - Map rank' 
+        },
+        { 
+          name: '💰 Points', 
+          value: '`/points @user` - Check points\n`/addpoints @user 50 reason:Good work` - Award points\n`/leaderboard` - View top users' 
+        },
+        { 
+          name: '🛡️ Moderation', 
+          value: '`/warn @user reason:Spam` - Warn user\n`/kick @user` - Kick\n`/ban @user` - Ban\n`/viewwarns @user` - View warnings' 
+        },
+        { 
+          name: '📢 Messaging', 
+          value: '`/announce #channel message` - Post announcement\n`/postembed #channel title message` - Post embed\n`/dm @user message` - DM user' 
+        },
+        { 
+          name: '📊 Statistics', 
+          value: '`/stats` - Server stats\n`/insights` - Detailed insights\n`/license` - License info' 
+        },
+        { 
+          name: '🎨 Configuration', 
+          value: '`/setwelcome #channel message` - Set welcome\n`/setlog #channel` - Set logging\n`/setunverified @Role` - Set unverified role\n`/sticky #channel message` - Sticky message' 
+        }
+      )
+      .setFooter({ text: 'Use {user} for mentions, {server} for server name in messages' });
+    
+    return interaction.reply({ embeds: [embed], ephemeral: true });
+  }
+
+  if (commandName === 'stats') {
+    await interaction.deferReply();
+    
+    try {
+      const [verifiedCount, pointsData, groupCount, warnCount] = await Promise.all([
+        pool.query('SELECT COUNT(*) FROM verified_users WHERE guild_id = $1', [guildId]),
+        pool.query('SELECT COUNT(*), SUM(points), AVG(points) FROM user_points WHERE guild_id = $1', [guildId]),
+        pool.query('SELECT COUNT(*) FROM roblox_groups WHERE guild_id = $1', [guildId]),
+        pool.query('SELECT COUNT(*) FROM warnings WHERE guild_id = $1', [guildId])
+      ]);
+      
+      const verified = parseInt(verifiedCount.rows[0].count);
+      const totalUsers = interaction.guild.memberCount;
+      const verificationRate = totalUsers > 0 ? ((verified / totalUsers) * 100).toFixed(1) : 0;
+      
+      const totalPoints = parseInt(pointsData.rows[0].sum || 0);
+      const avgPoints = parseFloat(pointsData.rows[0].avg || 0).toFixed(1);
+      const groups = parseInt(groupCount.rows[0].count);
+      const warns = parseInt(warnCount.rows[0].count);
+      
+      const embed = new EmbedBuilder()
+        .setColor('#00a6ff')
+        .setTitle('📊 Server Statistics')
+        .addFields(
+          { name: '👥 Members', value: `Total: ${totalUsers}\nVerified: ${verified}\nRate: ${verificationRate}%`, inline: true },
+          { name: '💰 Points', value: `Total Awarded: ${totalPoints}\nAverage: ${avgPoints}\nActive Users: ${pointsData.rows[0].count || 0}`, inline: true },
+          { name: '🎮 Integration', value: `Roblox Groups: ${groups}\nTotal Warnings: ${warns}`, inline: true }
+        )
+        .setTimestamp();
+      
+      return interaction.editReply({ embeds: [embed] });
+    } catch (e) {
+      return interaction.editReply(`❌ Error fetching stats: ${e.message}`);
+    }
+  }
+
+  if (commandName === 'insights') {
+    await interaction.deferReply();
+    
+    try {
+      const [recentVerifications, topEarners, recentWarnings] = await Promise.all([
+        pool.query('SELECT COUNT(*) FROM verified_users WHERE guild_id = $1 AND created_at > NOW() - INTERVAL \'7 days\'', [guildId]),
+        pool.query('SELECT user_id, points FROM user_points WHERE guild_id = $1 ORDER BY points DESC LIMIT 5', [guildId]),
+        pool.query('SELECT COUNT(*) FROM warnings WHERE guild_id = $1 AND timestamp > NOW() - INTERVAL \'7 days\'', [guildId])
+      ]);
+      
+      const weeklyVerifications = parseInt(recentVerifications.rows[0].count);
+      const weeklyWarnings = parseInt(recentWarnings.rows[0].count);
+      
+      const topUsers = topEarners.rows.map((r, i) => 
+        `${i + 1}. <@${r.user_id}> - ${r.points} pts`
+      ).join('\n') || 'No data yet';
+      
+      const embed = new EmbedBuilder()
+        .setColor('#00a6ff')
+        .setTitle('📈 Server Insights')
+        .setDescription('Activity analysis for the past 7 days')
+        .addFields(
+          { name: '📅 This Week', value: `New Verifications: ${weeklyVerifications}\nNew Warnings: ${weeklyWarnings}`, inline: false },
+          { name: '🏆 Top Point Earners', value: topUsers, inline: false }
+        )
+        .setTimestamp();
+      
+      return interaction.editReply({ embeds: [embed] });
+    } catch (e) {
+      return interaction.editReply(`❌ Error fetching insights: ${e.message}`);
+    }
+  }
+
+  if (commandName === 'setwelcome') {
+    const channel = options.getChannel('channel');
+    const message = options.getString('message');
+    
+    try {
+      await pool.query(
+        'INSERT INTO guild_config (guild_id, welcome_channel_id, welcome_message) VALUES ($1, $2, $3) ON CONFLICT (guild_id) DO UPDATE SET welcome_channel_id = $2, welcome_message = $3',
+        [guildId, channel.id, message]
+      );
+      
+      return interaction.reply({ 
+        content: `✅ Welcome message set for ${channel}\n\n**Preview:**\n${message.replace(/{user}/g, `<@${user.id}>`).replace(/{server}/g, interaction.guild.name)}`, 
+        ephemeral: true 
+      });
+    } catch (e) {
+      return interaction.reply({ content: `❌ Error: ${e.message}`, ephemeral: true });
+    }
+  }
+
+  if (commandName === 'setlog') {
+    const channel = options.getChannel('channel');
+    
+    try {
+      await pool.query(
+        'INSERT INTO guild_config (guild_id, log_channel_id) VALUES ($1, $2) ON CONFLICT (guild_id) DO UPDATE SET log_channel_id = $2',
+        [guildId, channel.id]
+      );
+      
+      await channel.send('✅ Activity logging enabled in this channel.');
+      
+      return interaction.reply({ content: `✅ Activity logs will be posted in ${channel}`, ephemeral: true });
+    } catch (e) {
+      return interaction.reply({ content: `❌ Error: ${e.message}`, ephemeral: true });
+    }
+  }
+
+  if (commandName === 'setunverified') {
+    const role = options.getRole('role');
+    
+    try {
+      await pool.query(
+        'INSERT INTO guild_config (guild_id, unverified_role_id) VALUES ($1, $2) ON CONFLICT (guild_id) DO UPDATE SET unverified_role_id = $2',
+        [guildId, role.id]
+      );
+      
+      return interaction.reply({ 
+        content: `✅ Unverified role set to ${role}\n\nNew members will automatically receive this role. It will be removed when they verify.`, 
+        ephemeral: true 
+      });
+    } catch (e) {
+      return interaction.reply({ content: `❌ Error: ${e.message}`, ephemeral: true });
+    }
+  }
+
+  if (commandName === 'sticky') {
+    const channel = options.getChannel('channel');
+    const message = options.getString('message');
+    
+    try {
+      if (!channel.isTextBased()) {
+        return interaction.reply({ content: '❌ Please select a text channel.', ephemeral: true });
+      }
+      
+      // Create initial sticky message
+      const stickyMsg = await channel.send(message);
+      
+      // Save to database
+      await pool.query(
+        'INSERT INTO sticky_messages (guild_id, channel_id, message_content, last_message_id) VALUES ($1, $2, $3, $4) ON CONFLICT (guild_id, channel_id) DO UPDATE SET message_content = $3, last_message_id = $4',
+        [guildId, channel.id, message, stickyMsg.id]
+      );
+      
+      return interaction.reply({ content: `✅ Sticky message created in ${channel}`, ephemeral: true });
+    } catch (e) {
+      return interaction.reply({ content: `❌ Error: ${e.message}`, ephemeral: true });
     }
   }
 
@@ -1568,6 +1925,18 @@ client.on('interactionCreate', async interaction => {
     
     const newPoints = await pool.query('SELECT points FROM user_points WHERE guild_id = $1 AND user_id = $2', [guildId, targetId]);
     await checkAndPromote(guildId, targetId, newPoints.rows[0].points);
+    
+    // Log points addition
+    await logActivity(guildId, new EmbedBuilder()
+      .setColor('#FFD700')
+      .setTitle('💰 Points Awarded')
+      .setDescription(`<@${user.id}> awarded **${amount}** points to <@${targetId}>`)
+      .addFields(
+        { name: 'Reason', value: reason, inline: false },
+        { name: 'New Balance', value: `${newPoints.rows[0].points} points`, inline: true }
+      )
+      .setTimestamp()
+    );
     
     return interaction.reply({ 
       content: `✅ Awarded **${amount}** points to <@${targetId}>\n\n**Reason:** ${reason}\n**Old Balance:** ${oldPoints} points\n**New Balance:** ${newPoints.rows[0].points} points\n**Change:** +${amount}` 
@@ -1921,6 +2290,16 @@ client.on('interactionCreate', async interaction => {
         'INSERT INTO warnings (guild_id, user_id, moderator_id, reason) VALUES ($1, $2, $3, $4)', 
         [guildId, target.id, user.id, reason]
       );
+      
+      // Log warning
+      await logActivity(guildId, new EmbedBuilder()
+        .setColor('#FFA500')
+        .setTitle('⚠️ User Warned')
+        .setDescription(`${target} warned by <@${user.id}>`)
+        .addFields({ name: 'Reason', value: reason })
+        .setTimestamp()
+      );
+      
       return interaction.reply({ content: `⚠️ Warned ${target}\n**Reason:** ${reason}` });
     } catch (e) {
       return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true });
@@ -2044,6 +2423,15 @@ app.get('/auth/callback', async (req, res) => {
       
       await updateNickname(guild, pending.userId, robloxUsername, abbreviation);
       await giveVerifiedRole(guild, pending.userId);
+      
+      // Log verification
+      await logActivity(pending.guildId, new EmbedBuilder()
+        .setColor('#00FF00')
+        .setTitle('✅ New Verification')
+        .setDescription(`<@${pending.userId}> verified as **${robloxUsername}**`)
+        .addFields({ name: 'Roblox ID', value: robloxId, inline: true })
+        .setTimestamp()
+      );
     }
     
     pendingVerifications.delete(state);
