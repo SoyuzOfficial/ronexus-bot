@@ -777,7 +777,8 @@ client.once('ready', async () => {
     ]},
     { name: 'removepoints', description: 'Remove points', default_member_permissions: '8', options: [
       { name: 'user', description: 'Username or @user', type: 3, required: true }, 
-      { name: 'amount', description: 'Amount', type: 4, required: true }
+      { name: 'amount', description: 'Amount', type: 4, required: true },
+      { name: 'reason', description: 'Reason for removal', type: 3, required: true }
     ]},
     { name: 'leaderboard', description: 'Points leaderboard' },
     
@@ -799,7 +800,7 @@ client.once('ready', async () => {
     { name: 'unblacklist-group', description: 'Remove group blacklist', default_member_permissions: '8', options: [
       { name: 'group_id', description: 'Group ID', type: 4, required: true }
     ]},
-    { name: 'viewblacklist', description: 'View blacklists' },
+    { name: 'viewblacklists', description: 'View server blacklists' },
     
     // Moderation
     { name: 'viewwarns', description: 'View warnings', options: [{ name: 'user', description: '@user', type: 6, required: true }] },
@@ -816,16 +817,20 @@ client.once('ready', async () => {
       { name: 'reason', description: 'Reason', type: 3, required: true }
     ]},
     
-    // Message as RoNexus
-    { name: 'msgr', description: 'Send message as RoNexus', default_member_permissions: '8', options: [
-      { name: 'channel', description: 'Channel to send in', type: 7, required: true },
-      { name: 'message', description: 'Message content', type: 3, required: true }
+    // Messaging
+    { name: 'announce', description: 'Post announcement in channel', default_member_permissions: '8', options: [
+      { name: 'channel', description: 'Channel to post in', type: 7, required: true },
+      { name: 'message', description: 'Announcement message', type: 3, required: true }
     ]},
-    { name: 'msgre', description: 'Send embedded message as RoNexus', default_member_permissions: '8', options: [
-      { name: 'channel', description: 'Channel to send in', type: 7, required: true },
+    { name: 'postembed', description: 'Post embedded announcement', default_member_permissions: '8', options: [
+      { name: 'channel', description: 'Channel to post in', type: 7, required: true },
       { name: 'title', description: 'Embed title', type: 3, required: true },
       { name: 'message', description: 'Embed description', type: 3, required: true },
       { name: 'color', description: 'Hex color (e.g. #FF0000)', type: 3, required: false }
+    ]},
+    { name: 'dm', description: 'Send DM to a user', default_member_permissions: '8', options: [
+      { name: 'user', description: '@user to DM', type: 6, required: true },
+      { name: 'message', description: 'Message to send', type: 3, required: true }
     ]}
   ];
 
@@ -1395,8 +1400,8 @@ client.on('interactionCreate', async interaction => {
   if (commandName === 'setup') {
     return interaction.reply({ embeds: [new EmbedBuilder()
       .setColor('#FFA500')
-      .setTitle('⚙️ RoNexus Setup Guide')
-      .setDescription('')
+      .setTitle('⚙️ Setup Guide')
+      .setDescription('Follow these steps to get RoNexus running in your server:')
       .addFields(
         { name: '1️⃣ Get Roblox API Key', value: '• Go to: https://create.roblox.com/credentials\n• Create Open Cloud API key\n• Select your group\n• Give it `group.member` permission\n• Copy the key' },
         { name: '2️⃣ Add Your Group', value: '`/addgroup GROUP_ID YOUR_API_KEY`' },
@@ -1530,8 +1535,13 @@ client.on('interactionCreate', async interaction => {
 
   if (commandName === 'addpoints') {
     const input = options.getString('user');
-    const amount = options.getInteger('amount');
+    let amount = options.getInteger('amount');
     const reason = options.getString('reason') || 'No reason provided';
+    
+    // Validate amount is positive
+    if (amount <= 0) {
+      return interaction.reply({ content: '❌ Amount must be a positive number!', ephemeral: true });
+    }
     
     let targetId = null;
     const mention = input.match(/<@!?(\d+)>/);
@@ -1546,6 +1556,10 @@ client.on('interactionCreate', async interaction => {
     }
     
     if (!targetId) return interaction.reply({ content: '❌ User not found!', ephemeral: true });
+    
+    // Get old points first
+    const oldPointsRes = await pool.query('SELECT points FROM user_points WHERE guild_id = $1 AND user_id = $2', [guildId, targetId]);
+    const oldPoints = oldPointsRes.rows.length > 0 ? oldPointsRes.rows[0].points : 0;
     
     await pool.query(
       'INSERT INTO user_points (guild_id, user_id, points) VALUES ($1, $2, $3) ON CONFLICT (guild_id, user_id) DO UPDATE SET points = user_points.points + $3', 
@@ -1556,13 +1570,19 @@ client.on('interactionCreate', async interaction => {
     await checkAndPromote(guildId, targetId, newPoints.rows[0].points);
     
     return interaction.reply({ 
-      content: `✅ Added **+${amount}** points to <@${targetId}>!\n**Reason:** ${reason}\n**New Total:** ${newPoints.rows[0].points} points\n\n` 
+      content: `✅ Awarded **${amount}** points to <@${targetId}>\n\n**Reason:** ${reason}\n**Old Balance:** ${oldPoints} points\n**New Balance:** ${newPoints.rows[0].points} points\n**Change:** +${amount}` 
     });
   }
 
   if (commandName === 'removepoints') {
     const input = options.getString('user');
-    const amount = options.getInteger('amount');
+    let amount = options.getInteger('amount');
+    const reason = options.getString('reason');
+    
+    // Validate amount is positive
+    if (amount <= 0) {
+      return interaction.reply({ content: '❌ Amount must be a positive number!', ephemeral: true });
+    }
     
     let targetId = null;
     const mention = input.match(/<@!?(\d+)>/);
@@ -1578,12 +1598,23 @@ client.on('interactionCreate', async interaction => {
     
     if (!targetId) return interaction.reply({ content: '❌ User not found!', ephemeral: true });
     
+    // Get old points first
+    const oldPointsRes = await pool.query('SELECT points FROM user_points WHERE guild_id = $1 AND user_id = $2', [guildId, targetId]);
+    const oldPoints = oldPointsRes.rows.length > 0 ? oldPointsRes.rows[0].points : 0;
+    
     await pool.query(
       'UPDATE user_points SET points = GREATEST(0, points - $1) WHERE guild_id = $2 AND user_id = $3', 
       [amount, guildId, targetId]
     );
     
-    return interaction.reply({ content: `✅ Removed **-${amount}** points from <@${targetId}>\n\n` });
+    const newPointsRes = await pool.query('SELECT points FROM user_points WHERE guild_id = $1 AND user_id = $2', [guildId, targetId]);
+    const newPoints = newPointsRes.rows.length > 0 ? newPointsRes.rows[0].points : 0;
+    
+    const actualRemoved = oldPoints - newPoints;
+    
+    return interaction.reply({ 
+      content: `✅ Removed **${actualRemoved}** points from <@${targetId}>\n\n**Reason:** ${reason}\n**Old Balance:** ${oldPoints} points\n**New Balance:** ${newPoints} points\n**Change:** -${actualRemoved}` 
+    });
   }
 
   if (commandName === 'leaderboard') {
@@ -1797,14 +1828,13 @@ client.on('interactionCreate', async interaction => {
     return interaction.reply({ content: `✅ Removed group **${groupId}** from blacklist` });
   }
 
-  if (commandName === 'viewblacklist') {
+  if (commandName === 'viewblacklists') {
     const users = await pool.query('SELECT roblox_username, reason FROM blacklisted_users WHERE guild_id = $1 LIMIT 10', [guildId]);
     const groups = await pool.query('SELECT group_name, group_id, reason FROM blacklisted_groups WHERE guild_id = $1 LIMIT 10', [guildId]);
     
     const embed = new EmbedBuilder()
-      .setTitle('🚫 Blacklist')
-      .setColor('#FF0000')
-      .setDescription('');
+      .setTitle('🚫 Server Blacklists')
+      .setColor('#FF0000');
     
     if (users.rows.length > 0) {
       const userList = users.rows.map(r => `• **${r.roblox_username}** - ${r.reason}`).join('\n');
@@ -1817,7 +1847,7 @@ client.on('interactionCreate', async interaction => {
     }
     
     if (users.rows.length === 0 && groups.rows.length === 0) {
-      return interaction.reply('📋 No blacklisted users or groups!');
+      return interaction.reply('📋 No blacklisted users or groups in this server.');
     }
     
     embed.addFields({ 
@@ -1833,12 +1863,12 @@ client.on('interactionCreate', async interaction => {
     
     try {
       const warns = await pool.query(
-        'SELECT reason, moderator_id, timestamp FROM warnings WHERE guild_id = $1 AND user_id = $2 AND active = true ORDER BY timestamp DESC LIMIT 10', 
+        'SELECT reason, moderator_id, timestamp FROM warnings WHERE guild_id = $1 AND user_id = $2 ORDER BY timestamp DESC LIMIT 10', 
         [guildId, target.id]
       );
       
       if (warns.rows.length === 0) {
-        return interaction.reply({ content: `📋 ${target} has no active warnings!`, ephemeral: true });
+        return interaction.reply({ content: `📋 ${target.username} has no warnings on record.`, ephemeral: true });
       }
       
       const warnList = warns.rows.map((w, i) => 
@@ -1848,12 +1878,12 @@ client.on('interactionCreate', async interaction => {
       const embed = new EmbedBuilder()
         .setColor('#FFA500')
         .setTitle(`⚠️ Warnings for ${target.username}`)
-        .setDescription(`${warnList}\n\n`)
-        .setFooter({ text: `Total Active Warnings: ${warns.rows.length}` });
+        .setDescription(warnList)
+        .setFooter({ text: `Total Warnings: ${warns.rows.length}` });
       
       return interaction.reply({ embeds: [embed], ephemeral: true });
     } catch (e) {
-      return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true });
+      return interaction.reply({ content: `❌ Error: ${e.message}`, ephemeral: true });
     }
   }
 
@@ -1897,27 +1927,27 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  if (commandName === 'msgr') {
+  if (commandName === 'announce') {
     const channel = options.getChannel('channel');
     const message = options.getString('message');
     
     try {
       if (!channel.isTextBased()) {
-        return interaction.reply({ content: '❌ Please select a text channel!', ephemeral: true });
+        return interaction.reply({ content: '❌ Please select a text channel.', ephemeral: true });
       }
       
       await channel.send(message);
       
       return interaction.reply({ 
-        content: `✅ Message sent to ${channel}\n\n`, 
+        content: `✅ Announcement posted in ${channel}`, 
         ephemeral: true 
       });
     } catch (e) {
-      return interaction.reply({ content: `❌ Failed to send message: ${e.message}`, ephemeral: true });
+      return interaction.reply({ content: `❌ Failed to post: ${e.message}`, ephemeral: true });
     }
   }
 
-  if (commandName === 'msgre') {
+  if (commandName === 'postembed') {
     const channel = options.getChannel('channel');
     const title = options.getString('title');
     const message = options.getString('message');
@@ -1925,24 +1955,43 @@ client.on('interactionCreate', async interaction => {
     
     try {
       if (!channel.isTextBased()) {
-        return interaction.reply({ content: '❌ Please select a text channel!', ephemeral: true });
+        return interaction.reply({ content: '❌ Please select a text channel.', ephemeral: true });
       }
       
       const embed = new EmbedBuilder()
         .setTitle(title)
         .setDescription(message)
         .setColor(color)
-        .setFooter({ text: 'RoNexus (C) 2026' })
+        .setFooter({ text: 'RoNexus' })
         .setTimestamp();
       
       await channel.send({ embeds: [embed] });
       
       return interaction.reply({ 
-        content: `✅ Embedded message sent to ${channel}\n\n`, 
+        content: `✅ Embed posted in ${channel}`, 
         ephemeral: true 
       });
     } catch (e) {
-      return interaction.reply({ content: `❌ Failed to send embed: ${e.message}`, ephemeral: true });
+      return interaction.reply({ content: `❌ Failed to post embed: ${e.message}`, ephemeral: true });
+    }
+  }
+
+  if (commandName === 'dm') {
+    const target = options.getUser('user');
+    const message = options.getString('message');
+    
+    try {
+      await target.send(`**Message from ${interaction.guild.name} Staff:**\n\n${message}`);
+      
+      return interaction.reply({ 
+        content: `✅ DM sent to ${target.username}`, 
+        ephemeral: true 
+      });
+    } catch (e) {
+      if (e.code === 50007) {
+        return interaction.reply({ content: `❌ Cannot send DM to ${target.username}. They may have DMs disabled.`, ephemeral: true });
+      }
+      return interaction.reply({ content: `❌ Failed to send DM: ${e.message}`, ephemeral: true });
     }
   }
 });
