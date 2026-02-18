@@ -134,6 +134,14 @@ async function ensureTablesExist() {
         UNIQUE(guild_id, user_id)
       );
       
+      -- Add verified_at to existing tables if missing
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='verified_users' AND column_name='verified_at') THEN
+          ALTER TABLE verified_users ADD COLUMN verified_at TIMESTAMP DEFAULT NOW();
+        END IF;
+      END $$;
+      
       CREATE TABLE IF NOT EXISTS user_points (
         id SERIAL PRIMARY KEY,
         guild_id VARCHAR(20) NOT NULL,
@@ -852,8 +860,10 @@ client.once('ready', async () => {
     { name: 'insights', description: 'View server insights', default_member_permissions: '8' },
     
     // Configuration
-    { name: 'setpermissions', description: 'Set which roles can use admin commands', default_member_permissions: '8', options: [
-      { name: 'role', description: 'Role to give permissions', type: 8, required: true }
+    { name: 'setpermissions', description: 'Set role permissions for specific command', default_member_permissions: '8', options: [
+      { name: 'role', description: 'Role to give permissions', type: 8, required: true },
+      { name: 'command', description: 'Command name (e.g. addpoints, ban)', type: 3, required: true },
+      { name: 'allow', description: 'Allow or deny', type: 5, required: true }
     ]},
     { name: 'setwelcome', description: 'Set welcome message', default_member_permissions: '8', options: [
       { name: 'channel', description: 'Welcome channel', type: 7, required: true },
@@ -874,6 +884,9 @@ client.once('ready', async () => {
     { name: 'addgroup', description: 'Add Roblox group', default_member_permissions: '8', options: [
       { name: 'group_id', description: 'Roblox group ID', type: 4, required: true }, 
       { name: 'api_key', description: 'Open Cloud API key', type: 3, required: true }
+    ]},
+    { name: 'removegroup', description: 'Remove Roblox group', default_member_permissions: '8', options: [
+      { name: 'group_id', description: 'Roblox group ID', type: 4, required: true }
     ]},
     { name: 'maprank', description: 'Map Discord role to Roblox rank', default_member_permissions: '8', options: [
       { name: 'discord_role', description: 'Discord role', type: 8, required: true }, 
@@ -947,9 +960,12 @@ client.once('ready', async () => {
       { name: 'message', description: 'Embed description', type: 3, required: true },
       { name: 'color', description: 'Hex color (e.g. #FF0000)', type: 3, required: false }
     ]},
-    { name: 'dm', description: 'Send DM to a user', default_member_permissions: '8', options: [
+    { name: 'dm', description: 'Send DM to user', default_member_permissions: '8', options: [
       { name: 'user', description: '@user to DM', type: 6, required: true },
-      { name: 'message', description: 'Message to send', type: 3, required: true }
+      { name: 'message', description: 'Message to send', type: 3, required: true },
+      { name: 'embed', description: 'Send as embed?', type: 5, required: false },
+      { name: 'title', description: 'Embed title (if embed=true)', type: 3, required: false },
+      { name: 'color', description: 'Embed color (if embed=true)', type: 3, required: false }
     ]},
     
     { name: 'removesticky', description: 'Remove sticky message', default_member_permissions: '8', options: [
@@ -1826,6 +1842,48 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  if (commandName === 'setpermissions') {
+    const role = options.getRole('role');
+    const command = options.getString('command');
+    const allow = options.getBoolean('allow');
+    
+    try {
+      // Create permissions table if not exists
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS command_permissions (
+          id SERIAL PRIMARY KEY,
+          guild_id VARCHAR(20) NOT NULL,
+          role_id VARCHAR(20) NOT NULL,
+          command_name VARCHAR(50) NOT NULL,
+          allowed BOOLEAN DEFAULT TRUE,
+          UNIQUE(guild_id, role_id, command_name)
+        )
+      `);
+      
+      if (allow) {
+        await pool.query(
+          'INSERT INTO command_permissions (guild_id, role_id, command_name, allowed) VALUES ($1, $2, $3, $4) ON CONFLICT (guild_id, role_id, command_name) DO UPDATE SET allowed = $4',
+          [guildId, role.id, command, allow]
+        );
+      } else {
+        await pool.query(
+          'DELETE FROM command_permissions WHERE guild_id = $1 AND role_id = $2 AND command_name = $3',
+          [guildId, role.id, command]
+        );
+      }
+      
+      // Log activity
+      await logActivity(guildId, 'config_change', `⚙️ <@${user.id}> ${allow ? 'allowed' : 'denied'} ${role} to use \`/${command}\``);
+      
+      return interaction.reply({ 
+        content: `✅ ${role} ${allow ? 'can now' : 'can no longer'} use \`/${command}\``, 
+        ephemeral: true 
+      });
+    } catch (e) {
+      return interaction.reply({ content: `❌ Error: ${e.message}`, ephemeral: true });
+    }
+  }
+
   if (commandName === 'setwelcome') {
     const channel = options.getChannel('channel');
     const message = options.getString('message');
@@ -1875,30 +1933,6 @@ client.on('interactionCreate', async interaction => {
         content: `✅ Unverified role set to ${role}\n\nNew members will automatically receive this role. It will be removed when they verify.`, 
         ephemeral: true 
       });
-    } catch (e) {
-      return interaction.reply({ content: `❌ Error: ${e.message}`, ephemeral: true });
-    }
-  }
-
-  if (commandName === 'sticky') {
-    const channel = options.getChannel('channel');
-    const message = options.getString('message');
-    
-    try {
-      if (!channel.isTextBased()) {
-        return interaction.reply({ content: '❌ Please select a text channel.', ephemeral: true });
-      }
-      
-      // Create initial sticky message
-      const stickyMsg = await channel.send(message);
-      
-      // Save to database
-      await pool.query(
-        'INSERT INTO sticky_messages (guild_id, channel_id, message_content, last_message_id) VALUES ($1, $2, $3, $4) ON CONFLICT (guild_id, channel_id) DO UPDATE SET message_content = $3, last_message_id = $4',
-        [guildId, channel.id, message, stickyMsg.id]
-      );
-      
-      return interaction.reply({ content: `✅ Sticky message created in ${channel}`, ephemeral: true });
     } catch (e) {
       return interaction.reply({ content: `❌ Error: ${e.message}`, ephemeral: true });
     }
@@ -1987,6 +2021,37 @@ client.on('interactionCreate', async interaction => {
       
       return interaction.reply({ 
         content: `✅ Added group **${groupId}**!\n\n**Next:** Use \`/maprank @Role ROBLOX_RANK_ID\` to sync Discord roles with Roblox ranks`, 
+        ephemeral: true 
+      });
+    } catch (e) {
+      return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true });
+    }
+  }
+
+  if (commandName === 'removegroup') {
+    const groupId = options.getInteger('group_id');
+    
+    try {
+      const result = await pool.query(
+        'DELETE FROM roblox_groups WHERE guild_id = $1 AND group_id = $2 RETURNING group_id',
+        [guildId, groupId]
+      );
+      
+      if (result.rows.length === 0) {
+        return interaction.reply({ 
+          content: `❌ Group **${groupId}** not found in this server!`, 
+          ephemeral: true 
+        });
+      }
+      
+      // Also delete rank mappings for this group
+      await pool.query('DELETE FROM rank_mappings WHERE guild_id = $1', [guildId]);
+      
+      // Log activity
+      await logActivity(guildId, 'config_change', `🗑️ <@${user.id}> removed Roblox group **${groupId}**`);
+      
+      return interaction.reply({ 
+        content: `✅ Removed group **${groupId}** and all its rank mappings!`, 
         ephemeral: true 
       });
     } catch (e) {
@@ -2473,6 +2538,9 @@ client.on('interactionCreate', async interaction => {
       
       await channel.send(message);
       
+      // Log activity
+      await logActivity(guildId, 'config_change', `📢 <@${user.id}> posted announcement in ${channel}\n**Message:** ${message.substring(0, 100)}${message.length > 100 ? '...' : ''}`);
+      
       return interaction.reply({ 
         content: `✅ Announcement posted in ${channel}`, 
         ephemeral: true 
@@ -2502,6 +2570,9 @@ client.on('interactionCreate', async interaction => {
       
       await channel.send({ embeds: [embed] });
       
+      // Log activity
+      await logActivity(guildId, 'config_change', `📢 <@${user.id}> posted embed in ${channel}\n**Title:** ${title}\n**Message:** ${message.substring(0, 80)}${message.length > 80 ? '...' : ''}`);
+      
       return interaction.reply({ 
         content: `✅ Embed posted in ${channel}`, 
         ephemeral: true 
@@ -2514,15 +2585,34 @@ client.on('interactionCreate', async interaction => {
   if (commandName === 'dm') {
     const target = options.getUser('user');
     const message = options.getString('message');
+    const useEmbed = options.getBoolean('embed') || false;
+    const title = options.getString('title');
+    const color = options.getString('color') || '#00a6ff';
     
     try {
-      await target.send(`**Message from ${interaction.guild.name} Staff:**\n\n${message}`);
+      if (useEmbed) {
+        // Send as embed
+        const embedMsg = new EmbedBuilder()
+          .setColor(color)
+          .setDescription(message)
+          .setFooter({ text: `From ${interaction.guild.name} Staff` })
+          .setTimestamp();
+        
+        if (title) {
+          embedMsg.setTitle(title);
+        }
+        
+        await target.send({ embeds: [embedMsg] });
+      } else {
+        // Send as regular message with header
+        await target.send(`**📩 Message from ${interaction.guild.name} Staff:**\n\n${message}\n\n*Need help? Contact server staff.*`);
+      }
       
-      // Log activity
-      await logActivity(guildId, 'dm_sent', `DM sent to ${target.username} by ${user.username}`);
+      // Log activity with full details
+      await logActivity(guildId, 'dm_sent', `📧 <@${user.id}> sent DM to **${target.tag}** (${target.id})\n**Type:** ${useEmbed ? 'Embed' : 'Text'}\n${title ? `**Title:** ${title}\n` : ''}**Message:** ${message.substring(0, 150)}${message.length > 150 ? '...' : ''}`);
       
       return interaction.reply({ 
-        content: `✅ DM sent to ${target.username}`, 
+        content: `✅ DM sent to ${target.username}\n**Type:** ${useEmbed ? 'Embed' : 'Text message'}\n**Preview logged**`, 
         ephemeral: true 
       });
     } catch (e) {
@@ -2724,6 +2814,9 @@ client.on('interactionCreate', async interaction => {
         [guildId, channel.id, message, msg.id]
       );
       
+      // Log activity
+      await logActivity(guildId, 'config_change', `📌 <@${user.id}> created sticky message in ${channel}\n**Message:** ${message.substring(0, 100)}${message.length > 100 ? '...' : ''}`);
+      
       return interaction.reply({ content: `✅ Sticky message created in ${channel}`, ephemeral: true });
     } catch (e) {
       return interaction.reply({ content: `❌ Error: ${e.message}`, ephemeral: true });
@@ -2750,6 +2843,9 @@ client.on('interactionCreate', async interaction => {
       } catch (e) {
         // Message may already be deleted, that's okay
       }
+      
+      // Log activity
+      await logActivity(guildId, 'config_change', `📌 <@${user.id}> removed sticky message from ${channel}`);
       
       return interaction.reply({ content: `✅ Sticky message removed from ${channel}`, ephemeral: true });
     } catch (e) {
