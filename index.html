@@ -3,592 +3,1220 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RoNexus - Premium Roblox Discord Bot</title>
+    <title>RoNexus — Premium Roblox Discord Bot</title>
     <meta name="description" content="The most powerful Roblox verification & management bot for Discord. Auto-ranking, points system, background checks & more.">
-    
-    <!-- Google Fonts - Montserrat -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    
+    <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
         :root {
-            --primary: #00a6ff;
-            --secondary: #667eea;
-            --dark: #0a0a0a;
-            --dark-lighter: #1a1a1a;
-            --dark-card: #2a2a2a;
-            --text: #ffffff;
-            --text-muted: #a0a0a0;
-            --success: #43b581;
-            --warning: #ffa500;
+            --blue: #0ea5e9;
+            --blue-dim: #0284c7;
+            --blue-glow: rgba(14, 165, 233, 0.25);
+            --blue-faint: rgba(14, 165, 233, 0.08);
+            --white: #f8fafc;
+            --muted: #94a3b8;
+            --muted-dim: #64748b;
+            --bg: #030712;
+            --bg-card: #0b1120;
+            --bg-card2: #0f172a;
+            --border: rgba(255,255,255,0.07);
+            --border-blue: rgba(14, 165, 233, 0.3);
+            --green: #22c55e;
         }
+
+        html { scroll-behavior: smooth; }
 
         body {
-            font-family: 'Montserrat', sans-serif;
-            background: var(--dark);
-            color: var(--text);
+            font-family: 'Outfit', sans-serif;
+            background: var(--bg);
+            color: var(--white);
             line-height: 1.6;
+            cursor: none;
+            overflow-x: hidden;
         }
 
-        /* Navbar */
-        .navbar {
+        /* Custom cursor */
+        .cursor {
+            width: 10px; height: 10px;
+            background: var(--blue);
+            border-radius: 50%;
             position: fixed;
-            top: 0;
-            width: 100%;
-            background: rgba(10, 10, 10, 0.95);
-            backdrop-filter: blur(10px);
-            padding: 20px 0;
-            z-index: 1000;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            top: 0; left: 0;
+            pointer-events: none;
+            z-index: 99999;
+            transition: transform 0.1s;
+            mix-blend-mode: screen;
+        }
+        .cursor-ring {
+            width: 36px; height: 36px;
+            border: 1px solid rgba(14,165,233,0.5);
+            border-radius: 50%;
+            position: fixed;
+            top: 0; left: 0;
+            pointer-events: none;
+            z-index: 99998;
+            transition: all 0.15s ease;
         }
 
-        .nav-container {
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 5px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb { background: var(--blue-dim); border-radius: 10px; }
+
+        /* Noise overlay */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+            pointer-events: none;
+            z-index: 9999;
+            opacity: 0.4;
+        }
+
+        /* === NAVBAR === */
+        .navbar {
+            position: fixed; top: 0; width: 100%;
+            z-index: 1000;
+            padding: 18px 0;
+            transition: all 0.4s ease;
+        }
+        .navbar.scrolled {
+            background: rgba(3,7,18,0.85);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+        }
+        .nav-inner {
             max-width: 1200px;
             margin: 0 auto;
-            padding: 0 20px;
+            padding: 0 32px;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
-
-        .logo img {
-            height: 40px;
-            width: auto;
-        }
-
-        .nav-links {
-            display: flex;
-            gap: 30px;
-            align-items: center;
-        }
-
-        .nav-links a {
-            color: var(--text);
+        .nav-logo {
+            display: flex; align-items: center; gap: 10px;
             text-decoration: none;
-            transition: color 0.3s;
+        }
+        .nav-logo img { height: 44px; }
+        .nav-logo-text {
+            font-family: 'Syne', sans-serif;
+            font-weight: 800;
+            font-size: 20px;
+            letter-spacing: -0.5px;
+        }
+        .nav-logo-text span { color: var(--blue); }
+        .nav-links { display: flex; align-items: center; gap: 36px; }
+        .nav-links a {
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 14px;
             font-weight: 500;
+            letter-spacing: 0.3px;
+            transition: color 0.2s;
+        }
+        .nav-links a:hover { color: var(--white); }
+        .nav-cta {
+            background: var(--blue);
+            color: #000 !important;
+            padding: 9px 22px;
+            border-radius: 8px;
+            font-weight: 600 !important;
+            font-size: 13px !important;
+            letter-spacing: 0.3px;
+            transition: all 0.2s !important;
+        }
+        .nav-cta:hover {
+            background: #38bdf8 !important;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 20px var(--blue-glow);
         }
 
-        .nav-links a:hover {
-            color: var(--primary);
-        }
-
-        /* Hero Section */
+        /* === HERO === */
         .hero {
-            margin-top: 80px;
-            padding: 100px 20px;
-            text-align: center;
-            background: linear-gradient(135deg, var(--dark) 0%, var(--dark-lighter) 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 120px 32px 80px;
             position: relative;
             overflow: hidden;
         }
 
-        .hero::before {
-            content: '';
-            position: absolute;
-            top: -50%;
-            left: -50%;
-            width: 200%;
-            height: 200%;
-            background: radial-gradient(circle, rgba(0, 166, 255, 0.1) 0%, transparent 70%);
-            animation: pulse 8s ease-in-out infinite;
+        /* Grid background */
+        .hero-grid {
+            position: absolute; inset: 0;
+            background-image:
+                linear-gradient(rgba(14,165,233,0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(14,165,233,0.05) 1px, transparent 1px);
+            background-size: 60px 60px;
+            mask-image: radial-gradient(ellipse 80% 80% at 50% 50%, black, transparent);
         }
 
-        @keyframes pulse {
-            0%, 100% { transform: scale(1); opacity: 0.5; }
-            50% { transform: scale(1.1); opacity: 0.8; }
+        /* Orbs */
+        .orb {
+            position: absolute;
+            border-radius: 50%;
+            filter: blur(80px);
+            pointer-events: none;
+        }
+        .orb-1 {
+            width: 600px; height: 600px;
+            background: radial-gradient(circle, rgba(14,165,233,0.12) 0%, transparent 70%);
+            top: -100px; left: 50%;
+            transform: translateX(-50%);
+            animation: drift 12s ease-in-out infinite alternate;
+        }
+        .orb-2 {
+            width: 400px; height: 400px;
+            background: radial-gradient(circle, rgba(99,102,241,0.08) 0%, transparent 70%);
+            bottom: 0; right: -100px;
+            animation: drift 16s ease-in-out infinite alternate-reverse;
+        }
+        @keyframes drift {
+            from { transform: translateX(-50%) translateY(0); }
+            to { transform: translateX(-50%) translateY(30px); }
         }
 
         .hero-content {
-            position: relative;
-            z-index: 1;
-            max-width: 800px;
+            position: relative; z-index: 2;
+            text-align: center;
+            max-width: 820px;
             margin: 0 auto;
+        }
+
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--blue-faint);
+            border: 1px solid var(--border-blue);
+            padding: 7px 16px;
+            border-radius: 100px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--blue);
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            margin-bottom: 32px;
+            animation: fadeDown 0.8s ease both;
+        }
+        .hero-badge .dot {
+            width: 6px; height: 6px;
+            background: var(--blue);
+            border-radius: 50%;
+            animation: blink 2s ease infinite;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
         }
 
         .hero h1 {
-            font-size: 64px;
-            margin-bottom: 20px;
-            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            font-family: 'Syne', sans-serif;
+            font-size: clamp(46px, 7vw, 88px);
+            font-weight: 800;
+            line-height: 1;
+            letter-spacing: -3px;
+            margin-bottom: 24px;
+            animation: fadeUp 0.9s ease 0.1s both;
+        }
+        .hero h1 .line-1 { display: block; color: var(--white); }
+        .hero h1 .line-2 {
+            display: block;
+            background: linear-gradient(135deg, var(--blue) 0%, #818cf8 60%, #c084fc 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
         }
 
-        .hero p {
-            font-size: 24px;
-            color: var(--text-muted);
-            margin-bottom: 40px;
-        }
-
-        .cta-buttons {
-            display: flex;
-            gap: 20px;
-            justify-content: center;
-            flex-wrap: wrap;
-        }
-
-        .btn {
-            padding: 15px 40px;
-            border: none;
-            border-radius: 10px;
+        .hero-sub {
             font-size: 18px;
+            color: var(--muted);
+            max-width: 520px;
+            margin: 0 auto 44px;
+            line-height: 1.7;
+            font-weight: 400;
+            animation: fadeUp 0.9s ease 0.2s both;
+        }
+
+        .hero-btns {
+            display: flex; gap: 14px;
+            justify-content: center; flex-wrap: wrap;
+            animation: fadeUp 0.9s ease 0.3s both;
+        }
+        .btn-hero-primary {
+            display: inline-flex; align-items: center; gap: 10px;
+            background: var(--blue);
+            color: #000;
+            padding: 14px 30px;
+            border-radius: 10px;
+            font-size: 15px;
             font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s;
             text-decoration: none;
-            display: inline-block;
+            transition: all 0.25s;
+            box-shadow: 0 0 30px var(--blue-glow);
         }
-
-        .btn-primary {
-            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
-            color: white;
-            box-shadow: 0 4px 20px rgba(0, 166, 255, 0.4);
-        }
-
-        .btn-primary:hover {
+        .btn-hero-primary:hover {
+            background: #38bdf8;
             transform: translateY(-2px);
-            box-shadow: 0 6px 30px rgba(0, 166, 255, 0.6);
+            box-shadow: 0 4px 40px rgba(14,165,233,0.5);
         }
-
-        .btn-secondary {
+        .btn-hero-secondary {
+            display: inline-flex; align-items: center; gap: 10px;
             background: transparent;
-            border: 2px solid var(--primary);
-            color: var(--primary);
+            color: var(--white);
+            padding: 14px 30px;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 500;
+            text-decoration: none;
+            border: 1px solid var(--border);
+            transition: all 0.25s;
+        }
+        .btn-hero-secondary:hover {
+            border-color: var(--border-blue);
+            background: var(--blue-faint);
         }
 
-        .btn-secondary:hover {
-            background: var(--primary);
-            color: white;
+        /* Hero command preview */
+        .hero-preview {
+            position: relative; z-index: 2;
+            margin-top: 80px;
+            animation: fadeUp 0.9s ease 0.5s both;
         }
-
-        /* Features Section */
-        .features {
-            padding: 100px 20px;
-            background: var(--dark-lighter);
-        }
-
-        .container {
-            max-width: 1200px;
+        .preview-window {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            overflow: hidden;
+            max-width: 680px;
             margin: 0 auto;
+            box-shadow: 0 40px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04);
+        }
+        .preview-bar {
+            background: #0d1526;
+            padding: 14px 18px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+        .preview-dot { width: 10px; height: 10px; border-radius: 50%; }
+        .preview-dot.red { background: #ff5f57; }
+        .preview-dot.yellow { background: #ffbd2e; }
+        .preview-dot.green { background: #28c940; }
+        .preview-title {
+            margin-left: 8px;
+            font-size: 12px;
+            color: var(--muted-dim);
+            font-family: 'Outfit', monospace;
+        }
+        .preview-body { padding: 24px; }
+        .cmd-line {
+            display: flex; align-items: flex-start; gap: 12px;
+            margin-bottom: 18px;
+            opacity: 0;
+            animation: cmdAppear 0.4s ease forwards;
+        }
+        .cmd-line:nth-child(1) { animation-delay: 1.2s; }
+        .cmd-line:nth-child(2) { animation-delay: 1.8s; }
+        .cmd-line:nth-child(3) { animation-delay: 2.4s; }
+        .cmd-line:nth-child(4) { animation-delay: 3.0s; }
+        @keyframes cmdAppear {
+            from { opacity: 0; transform: translateX(-8px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        .cmd-avatar {
+            width: 34px; height: 34px; border-radius: 50%;
+            flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+            font-size: 16px;
+        }
+        .cmd-avatar.bot { background: linear-gradient(135deg, #0ea5e9, #6366f1); }
+        .cmd-avatar.user { background: linear-gradient(135deg, #1e293b, #334155); }
+        .cmd-msg { flex: 1; }
+        .cmd-name { font-size: 12px; font-weight: 600; color: var(--blue); margin-bottom: 4px; }
+        .cmd-name.user-name { color: #a78bfa; }
+        .cmd-text { font-size: 13px; color: var(--muted); font-family: 'Outfit', monospace; }
+        .cmd-embed {
+            background: #060e1d;
+            border-left: 3px solid var(--blue);
+            border-radius: 0 8px 8px 0;
+            padding: 12px 14px;
+            margin-top: 8px;
+        }
+        .cmd-embed-title { font-size: 13px; font-weight: 600; color: var(--white); margin-bottom: 6px; }
+        .cmd-embed-body { font-size: 12px; color: var(--muted); line-height: 1.6; }
+        .badge-green { color: var(--green); font-weight: 600; }
+        .badge-blue { color: var(--blue); font-weight: 600; }
+
+        @keyframes fadeDown {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
         }
 
-        .section-title {
-            text-align: center;
-            font-size: 48px;
-            margin-bottom: 60px;
-            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-
-        .features-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 30px;
-        }
-
-        .feature-card {
-            background: var(--dark-card);
-            padding: 40px;
-            border-radius: 15px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            transition: all 0.3s;
-        }
-
-        .feature-card:hover {
-            transform: translateY(-5px);
-            border-color: var(--primary);
-            box-shadow: 0 10px 30px rgba(0, 166, 255, 0.2);
-        }
-
-        .feature-icon {
-            font-size: 48px;
-            margin-bottom: 20px;
-        }
-
-        .feature-card h3 {
-            font-size: 24px;
-            margin-bottom: 15px;
-            color: var(--primary);
-        }
-
-        .feature-card p {
-            color: var(--text-muted);
-            line-height: 1.8;
-        }
-
-        /* Pricing Section */
-        .pricing {
-            padding: 100px 20px;
-            background: var(--dark);
-        }
-
-        .pricing-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-            gap: 30px;
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-
-        .pricing-card {
-            background: var(--dark-card);
-            padding: 40px;
-            border-radius: 15px;
-            border: 2px solid rgba(255, 255, 255, 0.1);
-            text-align: center;
-            transition: all 0.3s;
-            position: relative;
-        }
-
-        .pricing-card:hover {
-            transform: translateY(-10px);
-            border-color: var(--primary);
-            box-shadow: 0 15px 40px rgba(0, 166, 255, 0.3);
-        }
-
-        .pricing-card.popular {
-            border-color: var(--primary);
-            box-shadow: 0 10px 30px rgba(0, 166, 255, 0.2);
-        }
-
-        .popular-badge {
+        /* Scroll indicator */
+        .scroll-hint {
             position: absolute;
-            top: -15px;
+            bottom: 40px;
             left: 50%;
             transform: translateX(-50%);
-            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
-            color: white;
-            padding: 5px 20px;
-            border-radius: 20px;
-            font-size: 14px;
-            font-weight: 600;
+            display: flex; flex-direction: column;
+            align-items: center; gap: 6px;
+            opacity: 0.4;
+            animation: fadeUp 1s ease 1s both;
+        }
+        .scroll-hint span { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); }
+        .scroll-line {
+            width: 1px; height: 40px;
+            background: linear-gradient(to bottom, var(--blue), transparent);
+            animation: scrollDrop 2s ease infinite;
+        }
+        @keyframes scrollDrop {
+            0% { transform: scaleY(0); transform-origin: top; opacity: 1; }
+            50% { transform: scaleY(1); transform-origin: top; opacity: 1; }
+            51% { transform: scaleY(1); transform-origin: bottom; opacity: 1; }
+            100% { transform: scaleY(0); transform-origin: bottom; opacity: 0; }
         }
 
-        .tier-emoji {
-            font-size: 64px;
-            margin-bottom: 20px;
+        /* === SECTION BASE === */
+        section { padding: 120px 32px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .section-label {
+            font-size: 11px; font-weight: 700;
+            letter-spacing: 3px; text-transform: uppercase;
+            color: var(--blue); margin-bottom: 16px;
+        }
+        .section-title {
+            font-family: 'Syne', sans-serif;
+            font-size: clamp(32px, 4vw, 52px);
+            font-weight: 800;
+            letter-spacing: -1.5px;
+            line-height: 1.1;
+            margin-bottom: 16px;
+        }
+        .section-title .accent {
+            background: linear-gradient(135deg, var(--blue), #818cf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .section-sub {
+            color: var(--muted);
+            font-size: 17px;
+            max-width: 500px;
+            line-height: 1.7;
         }
 
-        .tier-name {
-            font-size: 28px;
-            margin-bottom: 10px;
+        /* === STATS === */
+        .stats-section {
+            padding: 60px 32px;
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            background: var(--bg-card);
         }
-
-        .tier-price {
-            font-size: 48px;
-            font-weight: 700;
-            color: var(--primary);
-            margin-bottom: 10px;
-        }
-
-        .tier-period {
-            color: var(--text-muted);
-            margin-bottom: 30px;
-        }
-
-        .tier-features {
-            list-style: none;
-            margin-bottom: 30px;
-        }
-
-        .tier-features li {
-            padding: 12px 0;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-            color: var(--text-muted);
-        }
-
-        .tier-features li:last-child {
-            border-bottom: none;
-        }
-
-        .tier-features .highlight {
-            color: var(--success);
-            font-weight: 600;
-        }
-
-        /* Stats Section */
-        .stats {
-            padding: 80px 20px;
-            background: var(--dark-lighter);
-            text-align: center;
-        }
-
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 40px;
-            max-width: 1000px;
-            margin: 40px auto 0;
-        }
-
-        .stat-item h3 {
-            font-size: 48px;
-            color: var(--primary);
-            margin-bottom: 10px;
-        }
-
-        .stat-item p {
-            color: var(--text-muted);
-            font-size: 18px;
-        }
-
-        /* Footer */
-        .footer {
-            background: var(--dark);
-            padding: 40px 20px;
-            text-align: center;
-            border-top: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .footer-links {
+        .stats-row {
+            max-width: 900px;
+            margin: 0 auto;
             display: flex;
-            gap: 30px;
-            justify-content: center;
+            justify-content: space-around;
+            gap: 40px;
+            flex-wrap: wrap;
+        }
+        .stat-item { text-align: center; }
+        .stat-num {
+            font-family: 'Syne', sans-serif;
+            font-size: 48px;
+            font-weight: 800;
+            color: var(--blue);
+            letter-spacing: -2px;
+            line-height: 1;
+            margin-bottom: 8px;
+        }
+        .stat-label {
+            font-size: 13px;
+            color: var(--muted);
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+        .stat-divider {
+            width: 1px;
+            background: var(--border);
+            align-self: stretch;
+        }
+
+        /* === FEATURES === */
+        .features-section { background: var(--bg); }
+        .features-header {
+            max-width: 600px;
+            margin-bottom: 70px;
+        }
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 2px;
+            background: var(--border);
+            border-radius: 20px;
+            overflow: hidden;
+        }
+        .feat-card {
+            background: var(--bg-card);
+            padding: 36px 32px;
+            transition: background 0.3s;
+            position: relative;
+            overflow: hidden;
+        }
+        .feat-card::after {
+            content: '';
+            position: absolute; inset: 0;
+            background: linear-gradient(135deg, var(--blue-faint), transparent);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .feat-card:hover { background: var(--bg-card2); }
+        .feat-card:hover::after { opacity: 1; }
+        .feat-card.wide { grid-column: span 2; }
+        .feat-icon {
+            width: 44px; height: 44px;
+            background: var(--blue-faint);
+            border: 1px solid var(--border-blue);
+            border-radius: 10px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 20px;
             margin-bottom: 20px;
         }
-
-        .footer-links a {
-            color: var(--text-muted);
-            text-decoration: none;
-            transition: color 0.3s;
+        .feat-card h3 {
+            font-family: 'Syne', sans-serif;
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 10px;
+            color: var(--white);
         }
-
-        .footer-links a:hover {
-            color: var(--primary);
-        }
-
-        .copyright {
-            color: var(--text-muted);
+        .feat-card p {
             font-size: 14px;
+            color: var(--muted);
+            line-height: 1.7;
+        }
+        .feat-tags {
+            display: flex; flex-wrap: wrap; gap: 6px;
+            margin-top: 16px;
+        }
+        .tag {
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            padding: 4px 10px;
+            border-radius: 100px;
+            background: var(--blue-faint);
+            border: 1px solid var(--border-blue);
+            color: var(--blue);
         }
 
-        /* Mobile Responsive */
-        @media (max-width: 768px) {
-            .hero h1 {
-                font-size: 40px;
-            }
+        /* === COMMANDS SHOWCASE === */
+        .commands-section { background: var(--bg-card); }
+        .commands-header { max-width: 600px; margin-bottom: 60px; }
+        .cmd-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 12px;
+        }
+        .cmd-item {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px 20px;
+            display: flex; align-items: flex-start; gap: 12px;
+            transition: all 0.25s;
+        }
+        .cmd-item:hover {
+            border-color: var(--border-blue);
+            transform: translateX(4px);
+        }
+        .cmd-slash {
+            font-family: 'Syne', sans-serif;
+            font-size: 20px;
+            font-weight: 800;
+            color: var(--blue);
+            line-height: 1;
+            margin-top: 2px;
+        }
+        .cmd-info { flex: 1; }
+        .cmd-name-text {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--white);
+            font-family: 'Outfit', monospace;
+            margin-bottom: 4px;
+        }
+        .cmd-desc { font-size: 12px; color: var(--muted); }
 
-            .hero p {
-                font-size: 18px;
-            }
+        /* === PRICING === */
+        .pricing-section { background: var(--bg); }
+        .pricing-header { text-align: center; margin-bottom: 60px; }
+        .pricing-header .section-label { text-align: center; }
+        .pricing-header .section-sub { margin: 0 auto; text-align: center; }
+        .pricing-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+        .price-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 40px 32px;
+            display: flex; flex-direction: column;
+            transition: all 0.3s;
+            position: relative;
+            overflow: hidden;
+        }
+        .price-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--blue), transparent);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .price-card:hover { border-color: var(--border-blue); transform: translateY(-4px); }
+        .price-card:hover::before { opacity: 1; }
+        .price-card.featured {
+            background: linear-gradient(180deg, #0b1829 0%, var(--bg-card) 100%);
+            border-color: var(--border-blue);
+            box-shadow: 0 0 60px rgba(14,165,233,0.1);
+        }
+        .price-card.featured::before { opacity: 1; }
+        .featured-badge {
+            display: inline-block;
+            background: var(--blue);
+            color: #000;
+            font-size: 11px; font-weight: 700;
+            letter-spacing: 1px; text-transform: uppercase;
+            padding: 5px 14px;
+            border-radius: 100px;
+            margin-bottom: 20px;
+        }
+        .price-tier-name {
+            font-family: 'Syne', sans-serif;
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        .price-tier-desc {
+            font-size: 13px;
+            color: var(--muted);
+            margin-bottom: 28px;
+        }
+        .price-amount {
+            display: flex; align-items: flex-start; gap: 4px;
+            margin-bottom: 4px;
+        }
+        .price-dollar {
+            font-family: 'Syne', sans-serif;
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--blue);
+            margin-top: 8px;
+        }
+        .price-num {
+            font-family: 'Syne', sans-serif;
+            font-size: 64px;
+            font-weight: 800;
+            line-height: 1;
+            letter-spacing: -2px;
+            color: var(--white);
+        }
+        .price-period {
+            font-size: 13px;
+            color: var(--muted);
+            margin-bottom: 32px;
+        }
+        .price-divider {
+            height: 1px;
+            background: var(--border);
+            margin-bottom: 28px;
+        }
+        .price-features { list-style: none; flex: 1; margin-bottom: 32px; }
+        .price-features li {
+            display: flex; align-items: center; gap: 10px;
+            font-size: 14px;
+            color: var(--muted);
+            padding: 9px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+        }
+        .price-features li:last-child { border: none; }
+        .price-features li .check { color: var(--green); font-size: 16px; flex-shrink: 0; }
+        .price-features li .highlight-text { color: var(--white); font-weight: 600; }
+        .price-btn {
+            display: block;
+            text-align: center;
+            padding: 14px;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.25s;
+        }
+        .price-btn.primary {
+            background: var(--blue);
+            color: #000;
+        }
+        .price-btn.primary:hover { background: #38bdf8; box-shadow: 0 4px 30px var(--blue-glow); }
+        .price-btn.outline {
+            border: 1px solid var(--border);
+            color: var(--white);
+        }
+        .price-btn.outline:hover { border-color: var(--border-blue); background: var(--blue-faint); }
 
-            .section-title {
-                font-size: 32px;
-            }
+        /* === FAQ / TRUST STRIP === */
+        .trust-strip {
+            padding: 40px 32px;
+            background: var(--bg-card);
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+        }
+        .trust-inner {
+            max-width: 1000px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 30px;
+        }
+        .trust-item {
+            display: flex; align-items: center; gap: 14px;
+        }
+        .trust-icon {
+            width: 42px; height: 42px;
+            background: var(--blue-faint);
+            border: 1px solid var(--border-blue);
+            border-radius: 10px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 20px;
+            flex-shrink: 0;
+        }
+        .trust-item h4 { font-size: 14px; font-weight: 600; color: var(--white); margin-bottom: 2px; }
+        .trust-item p { font-size: 12px; color: var(--muted); }
 
-            .nav-links {
-                display: none;
-            }
+        /* === FOOTER === */
+        .footer {
+            background: var(--bg);
+            padding: 60px 32px 40px;
+            border-top: 1px solid var(--border);
+        }
+        .footer-inner {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .footer-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 60px;
+            flex-wrap: wrap;
+            margin-bottom: 60px;
+        }
+        .footer-brand { max-width: 280px; }
+        .footer-logo {
+            font-family: 'Syne', sans-serif;
+            font-size: 22px;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            margin-bottom: 14px;
+        }
+        .footer-logo span { color: var(--blue); }
+        .footer-tagline { font-size: 14px; color: var(--muted); line-height: 1.6; }
+        .footer-links-group h5 {
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--muted-dim);
+            margin-bottom: 18px;
+        }
+        .footer-links-group a {
+            display: block;
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 14px;
+            margin-bottom: 12px;
+            transition: color 0.2s;
+        }
+        .footer-links-group a:hover { color: var(--white); }
+        .footer-bottom {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+            padding-top: 32px;
+            border-top: 1px solid var(--border);
+        }
+        .footer-copy { font-size: 13px; color: var(--muted-dim); }
+        .footer-right { display: flex; gap: 24px; }
+        .footer-right a {
+            font-size: 13px; color: var(--muted-dim);
+            text-decoration: none; transition: color 0.2s;
+        }
+        .footer-right a:hover { color: var(--white); }
 
-            .pricing-grid {
-                grid-template-columns: 1fr;
-            }
+        /* reveal animations */
+        .reveal {
+            opacity: 0;
+            transform: translateY(24px);
+            transition: opacity 0.7s ease, transform 0.7s ease;
+        }
+        .reveal.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* === RESPONSIVE === */
+        @media (max-width: 900px) {
+            .features-grid { grid-template-columns: 1fr 1fr; }
+            .feat-card.wide { grid-column: span 1; }
+            .pricing-grid { grid-template-columns: 1fr; max-width: 440px; }
+        }
+        @media (max-width: 640px) {
+            section { padding: 80px 20px; }
+            .features-grid { grid-template-columns: 1fr; }
+            .hero h1 { letter-spacing: -2px; }
+            .cursor, .cursor-ring { display: none; }
+            body { cursor: auto; }
+            .nav-links { gap: 16px; }
+            .stat-divider { display: none; }
+            .footer-top { flex-direction: column; }
         }
     </style>
 </head>
 <body>
-    <!-- Navbar -->
-    <nav class="navbar">
-        <div class="nav-container">
-            <div class="logo">
-                <img src="RoNexus.png" alt="RoNexus Logo">
-            </div>
-            <div class="nav-links">
-                <a href="#features">Features</a>
-                <a href="#pricing">Pricing</a>
-                <a href="https://discord.com/api/oauth2/authorize?client_id=1468180922062078047&permissions=8&scope=bot%20applications.commands" target="_blank">Add to Discord</a>
-            </div>
-        </div>
-    </nav>
 
-    <!-- Hero Section -->
-    <section class="hero">
+<!-- Custom cursor -->
+<div class="cursor" id="cursor"></div>
+<div class="cursor-ring" id="cursorRing"></div>
+
+<!-- ===== NAVBAR ===== -->
+<nav class="navbar" id="navbar">
+    <div class="nav-inner">
+        <a href="#" class="nav-logo">
+            <img src="RoNexus.png" alt="RoNexus">
+        </a>
+        <div class="nav-links">
+            <a href="#features">Features</a>
+            <a href="#commands">Commands</a>
+            <a href="#pricing">Pricing</a>
+            <a href="https://discord.gg/CsaHXe42n2" target="_blank">Support</a>
+            <a href="https://discord.com/api/oauth2/authorize?client_id=1468180922062078047&permissions=8&scope=bot%20applications.commands" target="_blank" class="nav-cta">Add to Discord →</a>
+        </div>
+    </div>
+</nav>
+
+<!-- ===== HERO ===== -->
+<section class="hero">
+    <div class="hero-grid"></div>
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+
+    <div style="width:100%; max-width:1200px; margin:0 auto; position:relative; z-index:2;">
         <div class="hero-content">
-            <h1>The Ultimate Roblox Discord Bot</h1>
-            <p>Auto-verify members, sync ranks, track points, run background checks & more. Trusted by thousands of servers.</p>
-            <div class="cta-buttons">
-                <a href="https://discord.com/api/oauth2/authorize?client_id=1468180922062078047&permissions=8&scope=bot%20applications.commands" class="btn btn-primary" target="_blank">Add to Discord</a>
-                <a href="#pricing" class="btn btn-secondary">View Pricing</a>
+            <div class="hero-badge">
+                <div class="dot"></div>
+                Now live on 10+ servers
+            </div>
+            <h1>
+                <span class="line-1">The Premium</span>
+                <span class="line-2">Roblox Bot.</span>
+            </h1>
+            <p class="hero-sub">Verification, auto-ranking, points, background checks, and full server management — all in one Discord bot.</p>
+            <div class="hero-btns">
+                <a href="https://discord.com/api/oauth2/authorize?client_id=1468180922062078047&permissions=8&scope=bot%20applications.commands" class="btn-hero-primary" target="_blank">
+                    ＋ Add to Discord
+                </a>
+                <a href="#pricing" class="btn-hero-secondary">
+                    View Pricing ↓
+                </a>
             </div>
         </div>
-    </section>
 
-    <!-- Stats Section -->
-    <section class="stats">
-        <div class="container">
-            <h2 class="section-title">Trusted by Communities</h2>
-            <div class="stats-grid">
-                <div class="stat-item">
-                    <h3>10+</h3>
-                    <p>Active Servers</p>
+        <!-- Bot preview window -->
+        <div class="hero-preview">
+            <div class="preview-window">
+                <div class="preview-bar">
+                    <div class="preview-dot red"></div>
+                    <div class="preview-dot yellow"></div>
+                    <div class="preview-dot green"></div>
+                    <span class="preview-title"># verification · RoNexus Bot</span>
                 </div>
-                <div class="stat-item">
-                    <h3>10+</h3>
-                    <p>Verified Users</p>
-                </div>
-                <div class="stat-item">
-                    <h3>99.9%</h3>
-                    <p>Uptime</p>
-                </div>
-                <div class="stat-item">
-                    <h3>24/7</h3>
-                    <p>Support</p>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Features Section -->
-    <section class="features" id="features">
-        <div class="container">
-            <h2 class="section-title">Powerful Features</h2>
-            <div class="features-grid">
-                <div class="feature-card">
-                    <div class="feature-icon">🔐</div>
-                    <h3>Roblox Verification</h3>
-                    <p>Seamless OAuth verification with automatic nickname updates and role assignment. Prevent double verification.</p>
-                </div>
-
-                <div class="feature-card">
-                    <div class="feature-icon">⚡</div>
-                    <h3>Auto Group Ranking</h3>
-                    <p>Automatically sync Discord roles with Roblox group ranks. Supports unlimited groups with Enterprise.</p>
-                </div>
-
-                <div class="feature-card">
-                    <div class="feature-icon">💰</div>
-                    <h3>Points System</h3>
-                    <p>Reward members with points. Auto-promote based on points. Track leaderboards and engagement.</p>
-                </div>
-
-                <div class="feature-card">
-                    <div class="feature-icon">🔍</div>
-                    <h3>Background Checks</h3>
-                    <p>Advanced alt detection, XTracker integration, risk scoring, and blacklist management to keep your server safe.</p>
-                </div>
-
-                <div class="feature-card">
-                    <div class="feature-icon">🎖️</div>
-                    <h3>Profile Analytics</h3>
-                    <p>View badges, friends, groups, gamepasses, and account history. Detect private inventories automatically.</p>
-                </div>
-
-                <div class="feature-card">
-                    <div class="feature-icon">⚙️</div>
-                    <h3>Full Customization</h3>
-                    <p>Custom rank prefixes, role mapping, warnings system, moderation tools, and more. Your server, your rules.</p>
-                </div>
-
-                <div class="feature-card">
-                    <div class="feature-icon">🚨</div>
-                    <h3>Security Tools</h3>
-                    <p>Blacklist users and groups, auto-detect exploiters, track previous usernames, and get detailed risk reports.</p>
-                </div>
-
-                <div class="feature-card">
-                    <div class="feature-icon">📊</div>
-                    <h3>Analytics Dashboard</h3>
-                    <p>Track server activity, verification rates, point distributions, and member engagement in real-time.</p>
-                </div>
-
-                <div class="feature-card">
-                    <div class="feature-icon">💬</div>
-                    <h3>Message as Bot</h3>
-                    <p>Send messages and embeds as RoNexus to any channel. Perfect for announcements and updates.</p>
+                <div class="preview-body">
+                    <div class="cmd-line">
+                        <div class="cmd-avatar user">👤</div>
+                        <div class="cmd-msg">
+                            <div class="cmd-name user-name">xSebastian</div>
+                            <div class="cmd-text">/verify</div>
+                        </div>
+                    </div>
+                    <div class="cmd-line">
+                        <div class="cmd-avatar bot">🤖</div>
+                        <div class="cmd-msg">
+                            <div class="cmd-name">RoNexus</div>
+                            <div class="cmd-embed">
+                                <div class="cmd-embed-title">🔐 Verify Your Account</div>
+                                <div class="cmd-embed-body">Click the button below to verify with Roblox!</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="cmd-line">
+                        <div class="cmd-avatar user">👤</div>
+                        <div class="cmd-msg">
+                            <div class="cmd-name user-name">xSebastian</div>
+                            <div class="cmd-text">/bgcheck username:xSebastian</div>
+                        </div>
+                    </div>
+                    <div class="cmd-line">
+                        <div class="cmd-avatar bot">🤖</div>
+                        <div class="cmd-msg">
+                            <div class="cmd-name">RoNexus</div>
+                            <div class="cmd-embed">
+                                <div class="cmd-embed-title">🔍 Background Check — xSebastian</div>
+                                <div class="cmd-embed-body">
+                                    Risk Level: <span class="badge-green">LOW (2/10)</span> &nbsp;·&nbsp;
+                                    Alt Score: <span class="badge-green">CLEAN 8/100</span><br>
+                                    Account Age: <span class="badge-blue">1,240 days</span> &nbsp;·&nbsp; Badges: <span class="badge-blue">847</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
-    </section>
+    </div>
 
-    <!-- Pricing Section -->
-    <section class="pricing" id="pricing">
-        <div class="container">
-            <h2 class="section-title">Choose Your Plan</h2>
-            <div class="pricing-grid">
-                <!-- Starter -->
-                <div class="pricing-card">
-                    <div class="tier-emoji">🥉</div>
-                    <h3 class="tier-name">Starter</h3>
-                    <div class="tier-price">$3</div>
-                    <div class="tier-period">/month</div>
-                    <ul class="tier-features">
-                        <li><span class="highlight">1 Server</span></li>
-                        <li><span class="highlight">3 Roblox Groups</span></li>
-                        <li>All Features Included</li>
-                        <li>Roblox Verification</li>
-                        <li>Auto Group Ranking</li>
-                        <li>Points System</li>
-                        <li>Background Checks</li>
-                        <li>Email Support</li>
-                    </ul>
-                    <a href="https://whop.com/ronexus/?pass=prod_mrrUZdoE3zvSM" class="btn btn-secondary" target="_blank">Get Started</a>
+    <div class="scroll-hint">
+        <span>Scroll</span>
+        <div class="scroll-line"></div>
+    </div>
+</section>
+
+<!-- ===== STATS ===== -->
+<div class="stats-section">
+    <div class="stats-row">
+        <div class="stat-item reveal">
+            <div class="stat-num" data-target="10">10+</div>
+            <div class="stat-label">Active Servers</div>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat-item reveal" style="transition-delay:0.1s">
+            <div class="stat-num">38</div>
+            <div class="stat-label">Total Commands</div>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat-item reveal" style="transition-delay:0.2s">
+            <div class="stat-num">99.9%</div>
+            <div class="stat-label">Uptime</div>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat-item reveal" style="transition-delay:0.3s">
+            <div class="stat-num">24/7</div>
+            <div class="stat-label">Always Online</div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== FEATURES ===== -->
+<section class="features-section" id="features">
+    <div class="container">
+        <div class="features-header reveal">
+            <div class="section-label">Features</div>
+            <h2 class="section-title">Everything your<br><span class="accent">server needs.</span></h2>
+            <p class="section-sub">Purpose-built for Roblox communities. From small groups to large military RP servers.</p>
+        </div>
+        <div class="features-grid reveal" style="transition-delay:0.15s">
+            <div class="feat-card wide">
+                <div class="feat-icon">🔐</div>
+                <h3>OAuth Roblox Verification</h3>
+                <p>Secure one-click verification via Roblox OAuth. Auto-updates Discord nickname, grants roles, removes unverified role — all instantly. No workarounds, no bots to fight.</p>
+                <div class="feat-tags">
+                    <span class="tag">Nickname Sync</span>
+                    <span class="tag">Role Auto-Assign</span>
+                    <span class="tag">Double-Verify Protection</span>
                 </div>
-
-                <!-- Professional (Popular) -->
-                <div class="pricing-card popular">
-                    <div class="popular-badge">⭐ MOST POPULAR</div>
-                    <div class="tier-emoji">🥈</div>
-                    <h3 class="tier-name">Professional</h3>
-                    <div class="tier-price">$12</div>
-                    <div class="tier-period">/month</div>
-                    <ul class="tier-features">
-                        <li><span class="highlight">5 Servers</span></li>
-                        <li><span class="highlight">10 Roblox Groups</span></li>
-                        <li>All Features Included</li>
-                        <li>Everything in Starter</li>
-                        <li>Priority Support</li>
-                        <li>Advanced Analytics</li>
-                        <li>Advanced Databases</li>
-                        <li>Premium Badge</li>
-                    </ul>
-                    <a href="https://whop.com/ronexus/?pass=prod_mrrUZdoE3zvSM" class="btn btn-primary" target="_blank">Get Professional</a>
+            </div>
+            <div class="feat-card">
+                <div class="feat-icon">⚡</div>
+                <h3>Auto Group Ranking</h3>
+                <p>Map Discord roles to Roblox group ranks. When a member earns a role, their Roblox rank updates automatically via Open Cloud API.</p>
+                <div class="feat-tags">
+                    <span class="tag">Multi-Group</span>
+                    <span class="tag">Open Cloud</span>
                 </div>
-
-                <!-- Enterprise -->
-                <div class="pricing-card">
-                    <div class="tier-emoji">🥇</div>
-                    <h3 class="tier-name">Enterprise</h3>
-                    <div class="tier-price">$35</div>
-                    <div class="tier-period">/month</div>
-                    <ul class="tier-features">
-                        <li><span class="highlight">Unlimited Servers</span></li>
-                        <li><span class="highlight">Unlimited Groups</span></li>
-                        <li>All Features Included</li>
-                        <li>Everything in Pro</li>
-                        <li>Dedicated Support</li>
-                        <li>White-label Options</li>
-                        <li>Custom Features</li>
-                        <li>SLA Guarantee</li>
-                    </ul>
-                    <a href="https://whop.com/ronexus/?pass=prod_mrrUZdoE3zvSM" class="btn btn-secondary" target="_blank">Get Enterprise</a>
+            </div>
+            <div class="feat-card">
+                <div class="feat-icon">💰</div>
+                <h3>Points & Auto-Promotion</h3>
+                <p>Award points to members. Configure rank thresholds — promotions happen automatically, synced to both Discord and Roblox.</p>
+            </div>
+            <div class="feat-card">
+                <div class="feat-icon">🔍</div>
+                <h3>Background Checks</h3>
+                <p>Advanced alt detection with risk scoring, XTracker exploit integration, blacklist system, and previous username tracking.</p>
+                <div class="feat-tags">
+                    <span class="tag">XTracker</span>
+                    <span class="tag">Risk Score</span>
+                    <span class="tag">Alt Detection</span>
+                </div>
+            </div>
+            <div class="feat-card">
+                <div class="feat-icon">🎖️</div>
+                <h3>Deep Profile Analytics</h3>
+                <p>View badges, friends, groups, gamepasses, games, and account history with full pagination and live data.</p>
+            </div>
+            <div class="feat-card">
+                <div class="feat-icon">📊</div>
+                <h3>Stats & Insights</h3>
+                <p>Real-time dashboards showing verification rates, point distributions, weekly activity, top members, and more.</p>
+            </div>
+            <div class="feat-card">
+                <div class="feat-icon">🛡️</div>
+                <h3>Moderation Suite</h3>
+                <p>Warn, kick, ban with full activity logging. Per-role command permissions. Complete audit trail for every action.</p>
+            </div>
+            <div class="feat-card wide">
+                <div class="feat-icon">📢</div>
+                <h3>Messaging & Announcements</h3>
+                <p>Post announcements, rich embeds, sticky messages, and DMs with embed support — all as the bot, with full activity logging.</p>
+                <div class="feat-tags">
+                    <span class="tag">Sticky Messages</span>
+                    <span class="tag">Embed DMs</span>
+                    <span class="tag">Activity Logs</span>
+                    <span class="tag">CSV Export</span>
                 </div>
             </div>
         </div>
-    </section>
+    </div>
+</section>
 
-    <!-- Footer -->
-    <footer class="footer">
-        <div class="container">
-            <div class="footer-links">
+<!-- ===== COMMANDS ===== -->
+<section class="commands-section" id="commands">
+    <div class="container">
+        <div class="commands-header reveal">
+            <div class="section-label">38 Commands</div>
+            <h2 class="section-title">Every command<br><span class="accent">you need.</span></h2>
+            <p class="section-sub">A full suite of slash commands covering verification, moderation, points, security, and configuration.</p>
+        </div>
+        <div class="cmd-grid reveal" style="transition-delay:0.1s">
+            <div class="cmd-item"><div class="cmd-slash">/</div><div class="cmd-info"><div class="cmd-name-text">verify</div><div class="cmd-desc">Link your Roblox account via OAuth</div></div></div>
+            <div class="cmd-item"><div class="cmd-slash">/</div><div class="cmd-info"><div class="cmd-name-text">bgcheck</div><div class="cmd-desc">Full background check with risk score</div></div></div>
+            <div class="cmd-item"><div class="cmd-slash">/</div><div class="cmd-info"><div class="cmd-name-text">profile</div><div class="cmd-desc">View verified user profile</div></div></div>
+            <div class="cmd-item"><div class="cmd-slash">/</div><div class="cmd-info"><div class="cmd-name-text">addpoints</div><div class="cmd-desc">Award points with reason logging</div></div></div>
+            <div class="cmd-item"><div class="cmd-slash">/</div><div class="cmd-info"><div class="cmd-name-text">leaderboard</div><div class="cmd-desc">Top 10 points leaderboard</div></div></div>
+            <div class="cmd-item"><div class="cmd-slash">/</div><div class="cmd-info"><div class="cmd-name-text">addgroup</div><div class="cmd-desc">Connect a Roblox group via API key</div></div></div>
+            <div class="cmd-item"><div class="cmd-slash">/</div><div class="cmd-info"><div class="cmd-name-text">maprank</div><div class="cmd-desc">Sync Discord role ↔ Roblox rank</div></div></div>
+            <div class="cmd-item"><div class="cmd-slash">/</div><div class="cmd-info"><div class="cmd-name-text">blacklist-user</div><div class="cmd-desc">Blacklist Roblox user with reason</div></div></div>
+            <div class="cmd-item"><div class="cmd-slash">/</div><div class="cmd-info"><div class="cmd-name-text">setpermissions</div><div class="cmd-desc">Per-role command access control</div></div></div>
+            <div class="cmd-item"><div class="cmd-slash">/</div><div class="cmd-info"><div class="cmd-name-text">stats</div><div class="cmd-desc">Server statistics dashboard</div></div></div>
+            <div class="cmd-item"><div class="cmd-slash">/</div><div class="cmd-info"><div class="cmd-name-text">insights</div><div class="cmd-desc">Detailed weekly analytics</div></div></div>
+            <div class="cmd-item"><div class="cmd-slash">/</div><div class="cmd-info"><div class="cmd-name-text">export</div><div class="cmd-desc">Export data to CSV (4 types)</div></div></div>
+            <div class="cmd-item"><div class="cmd-slash">/</div><div class="cmd-info"><div class="cmd-name-text">dm</div><div class="cmd-desc">Send embed DMs as bot</div></div></div>
+            <div class="cmd-item"><div class="cmd-slash">/</div><div class="cmd-info"><div class="cmd-name-text">postembed</div><div class="cmd-desc">Post rich embed announcements</div></div></div>
+            <div class="cmd-item"><div class="cmd-slash">/</div><div class="cmd-info"><div class="cmd-name-text">warn / kick / ban</div><div class="cmd-desc">Moderation with full logging</div></div></div>
+            <div class="cmd-item"><div class="cmd-slash">/</div><div class="cmd-info"><div class="cmd-name-text">sticky</div><div class="cmd-desc">Auto-reposting sticky messages</div></div></div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== TRUST STRIP ===== -->
+<div class="trust-strip">
+    <div class="trust-inner">
+        <div class="trust-item reveal">
+            <div class="trust-icon">🔒</div>
+            <div>
+                <h4>Secure OAuth</h4>
+                <p>Roblox official OAuth verification</p>
+            </div>
+        </div>
+        <div class="trust-item reveal" style="transition-delay:0.1s">
+            <div class="trust-icon">⚡</div>
+            <div>
+                <h4>Railway Hosted</h4>
+                <p>99.9% uptime, auto-deploys</p>
+            </div>
+        </div>
+        <div class="trust-item reveal" style="transition-delay:0.2s">
+            <div class="trust-icon">🗄️</div>
+            <div>
+                <h4>PostgreSQL Database</h4>
+                <p>Persistent, reliable data storage</p>
+            </div>
+        </div>
+        <div class="trust-item reveal" style="transition-delay:0.3s">
+            <div class="trust-icon">🎯</div>
+            <div>
+                <h4>Built for Roblox</h4>
+                <p>XTracker, Open Cloud API native</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ===== PRICING ===== -->
+<section class="pricing-section" id="pricing">
+    <div class="container">
+        <div class="pricing-header reveal">
+            <div class="section-label">Pricing</div>
+            <h2 class="section-title">Simple, <span class="accent">transparent</span> pricing.</h2>
+            <p class="section-sub">Cancel anytime. All plans include every feature — limits are only on servers and groups.</p>
+        </div>
+        <div class="pricing-grid">
+            <div class="price-card reveal" style="transition-delay:0.05s">
+                <div class="price-tier-name">Starter</div>
+                <div class="price-tier-desc">Perfect for a single community</div>
+                <div class="price-amount">
+                    <span class="price-dollar">$</span>
+                    <span class="price-num">3</span>
+                </div>
+                <div class="price-period">per month</div>
+                <div class="price-divider"></div>
+                <ul class="price-features">
+                    <li><span class="check">✓</span> <span><span class="highlight-text">1 Server</span></span></li>
+                    <li><span class="check">✓</span> <span><span class="highlight-text">3 Roblox Groups</span></span></li>
+                    <li><span class="check">✓</span> <span>Roblox OAuth Verification</span></li>
+                    <li><span class="check">✓</span> <span>Auto Group Ranking</span></li>
+                    <li><span class="check">✓</span> <span>Points & Leaderboard</span></li>
+                    <li><span class="check">✓</span> <span>Background Checks + XTracker</span></li>
+                    <li><span class="check">✓</span> <span>All 38 Commands</span></li>
+                    <li><span class="check">✓</span> <span>Email Support</span></li>
+                </ul>
+                <a href="https://whop.com/ronexus/?pass=prod_mrrUZdoE3zvSM" class="price-btn outline" target="_blank">Get Started</a>
+            </div>
+
+            <div class="price-card featured reveal" style="transition-delay:0.1s">
+                <div class="featured-badge">★ Most Popular</div>
+                <div class="price-tier-name">Professional</div>
+                <div class="price-tier-desc">For growing communities</div>
+                <div class="price-amount">
+                    <span class="price-dollar">$</span>
+                    <span class="price-num">12</span>
+                </div>
+                <div class="price-period">per month</div>
+                <div class="price-divider"></div>
+                <ul class="price-features">
+                    <li><span class="check">✓</span> <span><span class="highlight-text">5 Servers</span></span></li>
+                    <li><span class="check">✓</span> <span><span class="highlight-text">10 Roblox Groups</span></span></li>
+                    <li><span class="check">✓</span> <span>Everything in Starter</span></li>
+                    <li><span class="check">✓</span> <span>Priority Support</span></li>
+                    <li><span class="check">✓</span> <span>Advanced Analytics</span></li>
+                    <li><span class="check">✓</span> <span>CSV Data Export</span></li>
+                    <li><span class="check">✓</span> <span>Premium Role Badge</span></li>
+                    <li><span class="check">✓</span> <span>Per-Role Permissions</span></li>
+                </ul>
+                <a href="https://whop.com/ronexus/?pass=prod_mrrUZdoE3zvSM" class="price-btn primary" target="_blank">Get Professional</a>
+            </div>
+
+            <div class="price-card reveal" style="transition-delay:0.15s">
+                <div class="price-tier-name">Enterprise</div>
+                <div class="price-tier-desc">For large-scale operations</div>
+                <div class="price-amount">
+                    <span class="price-dollar">$</span>
+                    <span class="price-num">35</span>
+                </div>
+                <div class="price-period">per month</div>
+                <div class="price-divider"></div>
+                <ul class="price-features">
+                    <li><span class="check">✓</span> <span><span class="highlight-text">Unlimited Servers</span></span></li>
+                    <li><span class="check">✓</span> <span><span class="highlight-text">Unlimited Groups</span></span></li>
+                    <li><span class="check">✓</span> <span>Everything in Professional</span></li>
+                    <li><span class="check">✓</span> <span>Dedicated Support Channel</span></li>
+                    <li><span class="check">✓</span> <span>White-label Options</span></li>
+                    <li><span class="check">✓</span> <span>Custom Feature Requests</span></li>
+                    <li><span class="check">✓</span> <span>SLA Uptime Guarantee</span></li>
+                    <li><span class="check">✓</span> <span>Early Access to Updates</span></li>
+                </ul>
+                <a href="https://whop.com/ronexus/?pass=prod_mrrUZdoE3zvSM" class="price-btn outline" target="_blank">Get Enterprise</a>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===== FOOTER ===== -->
+<footer class="footer">
+    <div class="footer-inner">
+        <div class="footer-top">
+            <div class="footer-brand">
+                <div class="footer-logo">Ro<span>Nexus</span></div>
+                <p class="footer-tagline">The premium Roblox verification and management bot. Built for serious communities.</p>
+            </div>
+            <div class="footer-links-group">
+                <h5>Product</h5>
                 <a href="#features">Features</a>
+                <a href="#commands">Commands</a>
                 <a href="#pricing">Pricing</a>
-                <a href="https://discord.gg/CsaHXe42n2" target="_blank">Support Server</a>
-                <a href="https://docs.ronexus.com" target="_blank">Documentation</a>
             </div>
-            <div class="copyright">
-                <p>&copy; 2026 RoNexus. All rights reserved.</p>
+            <div class="footer-links-group">
+                <h5>Resources</h5>
+                <a href="https://docs.ronexus.com" target="_blank">Documentation</a>
+                <a href="https://discord.gg/CsaHXe42n2" target="_blank">Support Server</a>
+            </div>
+            <div class="footer-links-group">
+                <h5>Add Bot</h5>
+                <a href="https://discord.com/api/oauth2/authorize?client_id=1468180922062078047&permissions=8&scope=bot%20applications.commands" target="_blank">Invite to Discord</a>
+                <a href="https://whop.com/ronexus/?pass=prod_mrrUZdoE3zvSM" target="_blank">Purchase License</a>
             </div>
         </div>
-    </footer>
+        <div class="footer-bottom">
+            <div class="footer-copy">© 2026 RoNexus · ronexus.org</div>
+            <div class="footer-right">
+                <a href="https://discord.gg/CsaHXe42n2" target="_blank">Discord</a>
+                <a href="#pricing">Pricing</a>
+            </div>
+        </div>
+    </div>
+</footer>
+
+<script>
+    // Custom cursor
+    const cursor = document.getElementById('cursor');
+    const cursorRing = document.getElementById('cursorRing');
+    let mx = 0, my = 0, rx = 0, ry = 0;
+    document.addEventListener('mousemove', e => { mx = e.clientX; my = e.clientY; });
+    function animateCursor() {
+        cursor.style.transform = `translate(${mx - 5}px, ${my - 5}px)`;
+        rx += (mx - rx) * 0.12;
+        ry += (my - ry) * 0.12;
+        cursorRing.style.transform = `translate(${rx - 18}px, ${ry - 18}px)`;
+        requestAnimationFrame(animateCursor);
+    }
+    animateCursor();
+    document.querySelectorAll('a, button').forEach(el => {
+        el.addEventListener('mouseenter', () => { cursor.style.transform += ' scale(2)'; cursorRing.style.borderColor = 'rgba(14,165,233,0.9)'; cursorRing.style.transform += ' scale(1.4)'; });
+        el.addEventListener('mouseleave', () => { cursorRing.style.borderColor = 'rgba(14,165,233,0.5)'; });
+    });
+
+    // Navbar scroll
+    const navbar = document.getElementById('navbar');
+    window.addEventListener('scroll', () => {
+        navbar.classList.toggle('scrolled', window.scrollY > 50);
+    });
+
+    // Reveal on scroll
+    const reveals = document.querySelectorAll('.reveal');
+    const observer = new IntersectionObserver(entries => {
+        entries.forEach(e => {
+            if (e.isIntersecting) { e.target.classList.add('visible'); observer.unobserve(e.target); }
+        });
+    }, { threshold: 0.12 });
+    reveals.forEach(r => observer.observe(r));
+</script>
 </body>
 </html>
