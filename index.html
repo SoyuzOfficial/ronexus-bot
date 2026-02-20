@@ -7,7 +7,7 @@
     <meta name="description" content="The most powerful Roblox verification & management bot for Discord. Auto-ranking, points system, background checks & more.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Outfit:wght@300;400;500;600;700&family=Barlow+Condensed:wght@500;600;700;800&display=swap" rel="stylesheet">
 
     <style>
         *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
@@ -217,11 +217,11 @@
         }
 
         .hero h1 {
-            font-family: 'Syne', sans-serif;
-            font-size: clamp(46px, 7vw, 88px);
-            font-weight: 800;
-            line-height: 1;
-            letter-spacing: -3px;
+            font-family: 'Barlow Condensed', sans-serif;
+            font-size: clamp(52px, 7vw, 96px);
+            font-weight: 700;
+            line-height: 0.95;
+            letter-spacing: 0px;
             margin-bottom: 24px;
             animation: fadeUp 0.9s ease 0.1s both;
         }
@@ -396,11 +396,11 @@
             color: var(--blue); margin-bottom: 16px;
         }
         .section-title {
-            font-family: 'Syne', sans-serif;
-            font-size: clamp(32px, 4vw, 52px);
-            font-weight: 800;
-            letter-spacing: -1.5px;
-            line-height: 1.1;
+            font-family: 'Barlow Condensed', sans-serif;
+            font-size: clamp(36px, 4.5vw, 58px);
+            font-weight: 700;
+            letter-spacing: 0px;
+            line-height: 1.05;
             margin-bottom: 16px;
         }
         .section-title .accent {
@@ -433,11 +433,11 @@
         }
         .stat-item { text-align: center; }
         .stat-num {
-            font-family: 'Syne', sans-serif;
-            font-size: 48px;
-            font-weight: 800;
+            font-family: 'Barlow Condensed', sans-serif;
+            font-size: 52px;
+            font-weight: 700;
             color: var(--blue);
-            letter-spacing: -2px;
+            letter-spacing: -0.5px;
             line-height: 1;
             margin-bottom: 8px;
         }
@@ -494,11 +494,12 @@
             margin-bottom: 20px;
         }
         .feat-card h3 {
-            font-family: 'Syne', sans-serif;
-            font-size: 18px;
+            font-family: 'Barlow Condensed', sans-serif;
+            font-size: 22px;
             font-weight: 700;
             margin-bottom: 10px;
             color: var(--white);
+            letter-spacing: 0.3px;
         }
         .feat-card p {
             font-size: 14px;
@@ -608,10 +609,11 @@
             margin-bottom: 20px;
         }
         .price-tier-name {
-            font-family: 'Syne', sans-serif;
-            font-size: 22px;
+            font-family: 'Barlow Condensed', sans-serif;
+            font-size: 26px;
             font-weight: 700;
             margin-bottom: 8px;
+            letter-spacing: 0.5px;
         }
         .price-tier-desc {
             font-size: 13px;
@@ -630,11 +632,11 @@
             margin-top: 8px;
         }
         .price-num {
-            font-family: 'Syne', sans-serif;
+            font-family: 'Outfit', sans-serif;
             font-size: 64px;
-            font-weight: 800;
+            font-weight: 700;
             line-height: 1;
-            letter-spacing: -2px;
+            letter-spacing: -3px;
             color: var(--white);
         }
         .price-period {
@@ -730,10 +732,10 @@
         }
         .footer-brand { max-width: 280px; }
         .footer-logo {
-            font-family: 'Syne', sans-serif;
-            font-size: 22px;
-            font-weight: 800;
-            letter-spacing: -0.5px;
+            font-family: 'Barlow Condensed', sans-serif;
+            font-size: 26px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
             margin-bottom: 14px;
         }
         .footer-logo span { color: var(--blue); }
@@ -861,7 +863,9 @@
                 </div>
                 <div class="preview-body">
                     <div class="cmd-line">
-                        <div class="cmd-avatar user">👤</div>
+                        <div class="cmd-avatar user" style="background:linear-gradient(135deg,#1e293b,#334155);overflow:hidden;padding:0;">
+                            <img src="seb.webp" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">
+                        </div>
                         <div class="cmd-msg">
                             <div class="cmd-name user-name">seb109k</div>
                             <div class="cmd-text">/verify</div>
@@ -878,7 +882,9 @@
                         </div>
                     </div>
                     <div class="cmd-line">
-                        <div class="cmd-avatar user">👤</div>
+                        <div class="cmd-avatar user" style="background:linear-gradient(135deg,#1e293b,#334155);overflow:hidden;padding:0;">
+                            <img src="2412c577a5d0a6429f66fc6bbb70695e.webp" style="width:100%;height:100%;object-fit:cover;border-radius:50%;">
+                        </div>
                         <div class="cmd-msg">
                             <div class="cmd-name user-name">seb109k</div>
                             <div class="cmd-text">/bgcheck username:seb109k</div>
@@ -894,6 +900,27 @@
                                     Risk Level: <span class="badge-green">LOW (2/10)</span> &nbsp;·&nbsp;
                                     Alt Score: <span class="badge-green">CLEAN 8/100</span><br>
                                     Account Age: <span class="badge-blue">1,240 days</span> &nbsp;·&nbsp; Badges: <span class="badge-blue">847</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="cmd-line">
+                        <div class="cmd-avatar user" style="background:linear-gradient(135deg,#450a0a,#7f1d1d);font-size:16px;">👾</div>
+                        <div class="cmd-msg">
+                            <div class="cmd-name user-name">x9qlz</div>
+                            <div class="cmd-text">/bgcheck username:x9qlz</div>
+                        </div>
+                    </div>
+                    <div class="cmd-line">
+                        <div class="cmd-avatar bot">🤖</div>
+                        <div class="cmd-msg">
+                            <div class="cmd-name">RoNexus</div>
+                            <div class="cmd-embed" style="border-left-color:#ef4444;">
+                                <div class="cmd-embed-title">🔍 Background Check — x9qlz</div>
+                                <div class="cmd-embed-body">
+                                    Risk Level: <span style="color:#ef4444;font-weight:600;">CRITICAL (9/10)</span> &nbsp;·&nbsp; Alt Score: <span style="color:#ef4444;font-weight:600;">HIGH 82/100</span><br>
+                                    🚨 XTracker: <span style="color:#ef4444;font-weight:600;">FLAGGED</span> &nbsp;·&nbsp; Exploits: <span style="color:#ef4444;font-weight:600;">Synapse X, Krnl</span><br>
+                                    ⚠️ Flags: <span style="color:#fbbf24;font-weight:600;">Exploiting · Doxxing · Cheating</span>
                                 </div>
                             </div>
                         </div>
