@@ -1,0 +1,37 @@
+name: Deploy Notify
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 2
+
+      - name: Notify Discord
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=%s)
+          AUTHOR=$(git log -1 --pretty=%an)
+          HASH=$(git log -1 --pretty=%h)
+          FILES=$(git diff --name-only HEAD~1 HEAD | tr '\n' ' ')
+
+          curl -s -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"embeds\": [{
+              \"title\": \"🚀 RoNexus — New Deploy\",
+              \"color\": 940299,
+              \"fields\": [
+                { \"name\": \"📝 Update\", \"value\": \"\`\`\`$COMMIT_MSG\`\`\`\" },
+                { \"name\": \"👤 By\", \"value\": \"$AUTHOR\", \"inline\": true },
+                { \"name\": \"🔖 Commit\", \"value\": \"\`$HASH\`\", \"inline\": true },
+                { \"name\": \"📁 Files\", \"value\": \"\`$FILES\`\" }
+              ],
+              \"footer\": { \"text\": \"ronexus.org\" },
+              \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+            }]
+          }"
