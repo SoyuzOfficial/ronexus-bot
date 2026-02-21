@@ -12,6 +12,45 @@
     <style>
         *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
+        .maintenance-banner {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            z-index: 9999;
+            background: linear-gradient(90deg, #92400e, #b45309, #92400e);
+            background-size: 200% 100%;
+            animation: bannerShift 4s ease infinite;
+            padding: 10px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #fef3c7;
+            letter-spacing: 0.3px;
+            border-bottom: 1px solid rgba(251,191,36,0.3);
+        }
+        @keyframes bannerShift {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+        }
+        .maintenance-banner .banner-dot {
+            width: 6px; height: 6px;
+            background: #fbbf24;
+            border-radius: 50%;
+            animation: blink 1.5s ease infinite;
+        }
+        .maintenance-banner .banner-close {
+            position: absolute; right: 16px;
+            background: none; border: none;
+            color: #fef3c7; cursor: pointer;
+            font-size: 18px; opacity: 0.7;
+            transition: opacity 0.2s; line-height: 1;
+        }
+        .maintenance-banner .banner-close:hover { opacity: 1; }
+        .banner-active .navbar { top: 41px; }
+        .banner-active .hero { margin-top: 121px; }
+
         :root {
             --blue: #0ea5e9;
             --blue-dim: #0284c7;
@@ -804,6 +843,29 @@
     </style>
 </head>
 <body>
+
+<!-- ============================================ -->
+<!-- MAINTENANCE BANNER TOGGLE                    -->
+<!-- Set to true to SHOW banner, false to HIDE it -->
+<script>
+    const SHOW_MAINTENANCE_BANNER = false; // 👈 CHANGE THIS
+
+    const BANNER_MESSAGE = "⚙️ We're currently performing scheduled maintenance. Some features may be unavailable.";
+    // 👆 CHANGE THIS MESSAGE anytime
+
+    if (SHOW_MAINTENANCE_BANNER) {
+        document.documentElement.classList.add('banner-active');
+        document.write(`
+            <div class="maintenance-banner" id="maintenanceBanner">
+                <div class="banner-dot"></div>
+                <span>🔧 <strong>Maintenance:</strong> ${BANNER_MESSAGE}</span>
+                <div class="banner-dot"></div>
+                <button class="banner-close" onclick="document.getElementById('maintenanceBanner').remove(); document.documentElement.classList.remove('banner-active')">✕</button>
+            </div>
+        `);
+    }
+</script>
+<!-- ============================================ -->
 
 <!-- Custom cursor -->
 <div class="cursor" id="cursor"></div>
