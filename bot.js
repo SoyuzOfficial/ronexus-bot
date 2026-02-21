@@ -258,30 +258,26 @@ async function checkIfPrivateProfile(userId) {
 async function getPreviousUsernames(userId) {
   try {
     const names = [];
-    // Get current user info
+    // Get current user info for display name check
     const userRes = await axios.get(`https://users.roblox.com/v1/users/${userId}`, { timeout: 5000 });
-    
-    // Display name if different
-    if (userRes.data.displayName && userRes.data.displayName !== userRes.data.name) {
-      names.push(`${userRes.data.displayName} (display name)`);
-    }
+    const currentName = userRes.data.name;
+    const displayName = userRes.data.displayName;
 
-    // Username history endpoint
+    // Username history - Roblox API
     try {
-      const historyRes = await axios.get(`https://users.roblox.com/v1/users/${userId}/username-history?limit=50&sortOrder=Asc`, { timeout: 5000 });
-      if (historyRes.data && historyRes.data.data && historyRes.data.data.length > 0) {
-        historyRes.data.data.forEach(entry => {
-          if (entry.name && entry.name !== userRes.data.name && !names.includes(entry.name)) {
-            names.push(entry.name);
-          }
+      const histRes = await axios.get(
+        `https://users.roblox.com/v1/users/${userId}/username-history?limit=50&sortOrder=Desc`,
+        { timeout: 5000 }
+      );
+      if (histRes.data?.data?.length > 0) {
+        histRes.data.data.forEach(entry => {
+          if (entry.name && entry.name !== currentName) names.push(entry.name);
         });
       }
-    } catch (e) {
-      // Username history may be unavailable, silently fail
-    }
+    } catch (e) { /* API may be restricted */ }
 
-    return names;
-  } catch (e) { return []; }
+    return { currentName, displayName, previousNames: names };
+  } catch (e) { return { currentName: null, displayName: null, previousNames: [] }; }
 }
 async function getProfilePicture(userId) {
   try {
@@ -1252,7 +1248,7 @@ client.on('interactionCreate', async interaction => {
     try {
       const robloxInfo = await getRobloxUserInfo(robloxId);
       if (!robloxInfo) return interaction.editReply('❌ Failed to fetch user info!');
-      const [badgeCount, friendsRes, userGroups, isPrivate, previousNames, profilePic] = await Promise.all([getAllBadges(robloxId), axios.get(`https://friends.roblox.com/v1/users/${robloxId}/friends/count`), getUserGroups(robloxId), checkIfPrivateProfile(robloxId), getPreviousUsernames(robloxId), getProfilePicture(robloxId)]);
+      const [badgeCount, friendsRes, userGroups, isPrivate, nameData, profilePic] = await Promise.all([getAllBadges(robloxId), axios.get(`https://friends.roblox.com/v1/users/${robloxId}/friends/count`), getUserGroups(robloxId), checkIfPrivateProfile(robloxId), getPreviousUsernames(robloxId), getProfilePicture(robloxId)]);
       const friendCount = friendsRes.data.count || 0;
       const groupIds = userGroups.map(g => g.group.id);
       const allBlacklistedGroups = [...AUTO_BLACKLIST_GROUPS];
@@ -1271,16 +1267,14 @@ client.on('interactionCreate', async interaction => {
       await pool.query('INSERT INTO background_checks (guild_id, user_id, roblox_id, roblox_username, risk_score, risk_level, account_age_days, has_premium, total_badges, total_friends) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)', [guildId, mention ? mention[1] : 'manual', robloxId, robloxUsername, riskScore, riskLevel, accountAgeDays, hasPremium, effectiveBadgeCount, friendCount]);
       const riskColor = riskLevel === 'CRITICAL' ? '#FF0000' : riskLevel === 'HIGH' ? '#FFA500' : riskLevel === 'MEDIUM' ? '#FFFF00' : '#00FF00';
       const altColor = altCheck.altScore >= 60 ? '🚨' : altCheck.altScore >= 40 ? '⚠️' : altCheck.altScore >= 20 ? '⚡' : '✅';
-      let namesInfo = 'No alternate names found';
+      const { previousNames, displayName: robloxDisplayName } = nameData;
+      let namesInfo = '`None found`';
       const nameParts = [];
-      if (robloxInfo.displayName && robloxInfo.displayName !== robloxInfo.name) {
-        nameParts.push(`**Display Name:** ${robloxInfo.displayName}`);
+      if (robloxDisplayName && robloxDisplayName !== robloxUsername) {
+        nameParts.push(`**Display Name:** ${robloxDisplayName}`);
       }
       if (previousNames.length > 0) {
-        const filtered = previousNames.filter(n => !n.includes('(display name)'));
-        const displayNames = previousNames.filter(n => n.includes('(display name)')).map(n => n.replace(' (display name)', ''));
-        if (displayNames.length > 0 && !nameParts.length) nameParts.push(`**Display Name:** ${displayNames.join(', ')}`);
-        if (filtered.length > 0) nameParts.push(`**Past Usernames:** ${filtered.join(', ')}`);
+        nameParts.push(`**Past Usernames:** ${previousNames.map(n => `\`${n}\``).join(', ')}`);
       }
       if (nameParts.length > 0) namesInfo = nameParts.join('\n');
       const embed = new EmbedBuilder().setColor(riskColor).setTitle('🔍 Background Check').setDescription(`**${robloxUsername}** (ID: ${robloxId})\n🔗 [View Profile](https://www.roblox.com/users/${robloxId}/profile)`).addFields(
