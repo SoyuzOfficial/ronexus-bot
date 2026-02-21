@@ -644,6 +644,11 @@ client.once('ready', async () => {
     { name: 'viewblacklists', description: 'View server blacklists' },
     // Moderation
     { name: 'viewwarns', description: 'View warnings', options: [{ name: 'user', description: '@user', type: 6, required: true }] },
+    { name: 'removewarn', description: 'Remove a warning from a user', default_member_permissions: '8', options: [
+      { name: 'user', description: '@user', type: 6, required: true },
+      { name: 'warn_number', description: 'Warning number to remove (from /viewwarns)', type: 4, required: true }
+    ]},
+    { name: 'cat', description: 'Get a random cat picture 🐱' },
     { name: 'kick', description: 'Kick', default_member_permissions: '2', options: [
       { name: 'user', description: '@user', type: 6, required: true },
       { name: 'reason', description: 'Reason', type: 3 }
@@ -980,7 +985,8 @@ client.on('interactionCreate', async interaction => {
       { name: '🔐 Verification', value: '`/verify` - Link Roblox\n`/profile @user` - View profile\n`/bgcheck username` - Background check\n`/update` - Refresh roles' },
       { name: '⚙️ Setup', value: '`/activate KEY` - Activate bot\n`/setverified @Role` - Set verified role\n`/setunverified @Role` - Set unverified role\n`/addgroup ID KEY` - Add Roblox group\n`/maprank @Role RANK_ID` - Map rank\n`/setlog #channel` - Set log channel\n`/setwelcome #channel msg` - Welcome message' },
       { name: '💰 Points', value: '`/points @user` - Check points\n`/addpoints @user 50` - Award points\n`/removepoints @user 25` - Remove points\n`/leaderboard` - Top members\n`/addrank @Role 100 "Member"` - Add rank' },
-      { name: '🛡️ Moderation', value: '`/warn @user reason` - Warn\n`/kick @user` - Kick\n`/ban @user` - Ban\n`/viewwarns @user` - View warnings' },
+      { name: '🛡️ Moderation', value: '`/warn @user reason` - Warn\n`/viewwarns @user` - View warnings\n`/removewarn @user 1` - Remove warning #1\n`/kick @user` - Kick\n`/ban @user` - Ban' },
+      { name: '🐱 Fun', value: '`/cat` - Random cat picture' },
       { name: '📢 Messaging', value: '`/announce #ch message` - Announce\n`/postembed #ch title message` - Embed\n`/dm @user message` - DM user\n`/sticky #ch message` - Sticky message' },
       { name: '📊 Data', value: '`/stats` - Server stats\n`/insights` - Detailed analytics\n`/export points` - Export CSV\n`/license` - License info' }
     ).setFooter({ text: 'ronexus.org' });
@@ -1347,10 +1353,59 @@ client.on('interactionCreate', async interaction => {
   // ============================================
   if (commandName === 'viewwarns') {
     const target = options.getUser('user');
-    const warns = await pool.query('SELECT reason, moderator_id, timestamp FROM warnings WHERE guild_id = $1 AND user_id = $2 ORDER BY timestamp DESC LIMIT 10', [guildId, target.id]);
+    const warns = await pool.query('SELECT id, reason, moderator_id, timestamp FROM warnings WHERE guild_id = $1 AND user_id = $2 ORDER BY timestamp DESC LIMIT 10', [guildId, target.id]);
     if (warns.rows.length === 0) return interaction.reply({ content: `📋 ${target.username} has no warnings.`, ephemeral: true });
-    const embed = new EmbedBuilder().setColor('#FFA500').setTitle(`⚠️ Warnings for ${target.username}`).setDescription(warns.rows.map((w, i) => `**${i + 1}.** ${w.reason}\n• By: <@${w.moderator_id}> • ${new Date(w.timestamp).toLocaleDateString()}`).join('\n\n')).setFooter({ text: `Total: ${warns.rows.length}` });
+    const embed = new EmbedBuilder().setColor('#FFA500').setTitle(`⚠️ Warnings for ${target.username}`).setDescription(warns.rows.map((w, i) => `**${i + 1}.** ${w.reason}\n• By: <@${w.moderator_id}> • ${new Date(w.timestamp).toLocaleDateString()}`).join('\n\n')).setFooter({ text: `Total: ${warns.rows.length} | Use /removewarn to remove one` });
     return interaction.reply({ embeds: [embed], ephemeral: true });
+  }
+  // ============================================
+  // REMOVEWARN
+  // ============================================
+  if (commandName === 'removewarn') {
+    const target = options.getUser('user');
+    const warnNumber = options.getInteger('warn_number');
+    try {
+      // Get warnings in same order as viewwarns
+      const warns = await pool.query(
+        'SELECT id, reason FROM warnings WHERE guild_id = $1 AND user_id = $2 ORDER BY timestamp DESC LIMIT 10',
+        [guildId, target.id]
+      );
+      if (warns.rows.length === 0) return interaction.reply({ content: `📋 ${target.username} has no warnings.`, ephemeral: true });
+      if (warnNumber < 1 || warnNumber > warns.rows.length) {
+        return interaction.reply({ content: `❌ Invalid warning number. ${target.username} has **${warns.rows.length}** warning(s). Use \`/viewwarns\` to see them.`, ephemeral: true });
+      }
+      const warnToRemove = warns.rows[warnNumber - 1];
+      await pool.query('DELETE FROM warnings WHERE id = $1', [warnToRemove.id]);
+      await logActivity(guildId, 'warning', `🗑️ <@${user.id}> removed warning #${warnNumber} from <@${target.id}>\n**Removed Warning:** ${warnToRemove.reason}`);
+      return interaction.reply({
+        embeds: [new EmbedBuilder()
+          .setColor('#00FF00')
+          .setTitle('✅ Warning Removed')
+          .setDescription(`Removed warning **#${warnNumber}** from ${target}`)
+          .addFields({ name: '📝 Warning was', value: warnToRemove.reason })
+          .setFooter({ text: `${warns.rows.length - 1} warning(s) remaining` })
+        ]
+      });
+    } catch (e) { return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true }); }
+  }
+  // ============================================
+  // CAT
+  // ============================================
+  if (commandName === 'cat') {
+    await interaction.deferReply();
+    try {
+      const res = await axios.get('https://api.thecatapi.com/v1/images/search', { timeout: 5000 });
+      const cat = res.data[0];
+      const embed = new EmbedBuilder()
+        .setColor('#FFB347')
+        .setTitle('🐱 Random Cat!')
+        .setImage(cat.url)
+        .setFooter({ text: 'Powered by TheCatAPI • Use /cat again for another!' })
+        .setTimestamp();
+      return interaction.editReply({ embeds: [embed] });
+    } catch (e) {
+      return interaction.editReply({ content: '❌ Couldn\'t fetch a cat right now. Try again!' });
+    }
   }
   if (commandName === 'kick') {
     const target = options.getUser('user'), reason = options.getString('reason') || 'No reason provided';
