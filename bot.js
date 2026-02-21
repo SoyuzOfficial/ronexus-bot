@@ -286,23 +286,96 @@ async function getProfilePicture(userId) {
     return null;
   } catch (e) { return null; }
 }
-async function logActivity(guildId, eventType, message) {
+// ============================================
+// LOGGING SYSTEM v2
+// ============================================
+let logCaseCounter = 1000;
+
+const LOG_EVENTS = {
+  verification:    { color: 0x22c55e, emoji: '✅', label: 'Member Verified',    category: '👤 Member',     border: '🟢' },
+  rank_change:     { color: 0xf59e0b, emoji: '⬆️',  label: 'Rank Changed',      category: '🎭 Roles',      border: '🟡' },
+  points_added:    { color: 0x0ea5e9, emoji: '💰', label: 'Points Added',       category: '💰 Points',     border: '🔵' },
+  points_removed:  { color: 0xf87171, emoji: '💸', label: 'Points Removed',     category: '💰 Points',     border: '🔴' },
+  warning:         { color: 0xf97316, emoji: '⚠️',  label: 'Warning Issued',     category: '🛡️ Moderation', border: '🟠' },
+  warning_issued:  { color: 0xf97316, emoji: '⚠️',  label: 'Warning Issued',     category: '🛡️ Moderation', border: '🟠' },
+  warning_removed: { color: 0x84cc16, emoji: '🗑️', label: 'Warning Removed',    category: '🛡️ Moderation', border: '🟢' },
+  kick:            { color: 0xef4444, emoji: '👢', label: 'Member Kicked',      category: '🛡️ Moderation', border: '🔴' },
+  ban:             { color: 0x450a0a, emoji: '🔨', label: 'Member Banned',      category: '🛡️ Moderation', border: '⛔' },
+  unban:           { color: 0x22c55e, emoji: '🔓', label: 'Member Unbanned',    category: '🛡️ Moderation', border: '🟢' },
+  dm_sent:         { color: 0xa855f7, emoji: '📧', label: 'DM Sent',            category: '📢 Messaging',  border: '🟣' },
+  announce:        { color: 0x06b6d4, emoji: '📢', label: 'Announcement Posted',category: '📢 Messaging',  border: '🔵' },
+  sticky:          { color: 0x0ea5e9, emoji: '📌', label: 'Sticky Message',     category: '📢 Messaging',  border: '🔵' },
+  config_change:   { color: 0x6366f1, emoji: '⚙️',  label: 'Config Changed',     category: '⚙️ Settings',   border: '🟣' },
+  blacklist:       { color: 0xdc2626, emoji: '🚫', label: 'Blacklist Updated',  category: '🔒 Security',   border: '🔴' },
+  bgcheck:         { color: 0x8b5cf6, emoji: '🔍', label: 'Background Check',   category: '🔒 Security',   border: '🟣' },
+  group_added:     { color: 0x10b981, emoji: '➕', label: 'Group Added',        category: '⚙️ Settings',   border: '🟢' },
+  group_removed:   { color: 0xef4444, emoji: '➖', label: 'Group Removed',      category: '⚙️ Settings',   border: '🔴' },
+  role_sync:       { color: 0xf59e0b, emoji: '🔄', label: 'Role Synced',        category: '🎭 Roles',      border: '🟡' },
+};
+
+async function logActivity(guildId, eventType, data) {
   try {
     const config = await pool.query('SELECT log_channel_id FROM guild_config WHERE guild_id = $1', [guildId]);
     if (config.rows.length === 0 || !config.rows[0].log_channel_id) return;
     const channel = client.channels.cache.get(config.rows[0].log_channel_id);
     if (!channel) return;
-    const colors = {
-      'verification': '#00FF00', 'rank_change': '#FFA500',
-      'points_added': '#00a6ff', 'points_removed': '#FF6B6B',
-      'warning': '#FFA500', 'kick': '#FF0000', 'ban': '#8B0000',
-      'dm_sent': '#9B59B6', 'config_change': '#667eea'
-    };
+
+    const event = LOG_EVENTS[eventType] || { color: 0x00a6ff, emoji: '📋', label: eventType.replace(/_/g,' '), category: '📋 General', border: '⚪' };
+    const caseId = ++logCaseCounter;
+    const guild = client.guilds.cache.get(guildId);
+    const guildName = guild ? guild.name : 'Unknown Server';
+    const guildIcon = guild ? guild.iconURL({ dynamic: true }) : null;
+
     const embed = new EmbedBuilder()
-      .setColor(colors[eventType] || '#00a6ff')
-      .setDescription(message)
-      .setFooter({ text: eventType.replace('_', ' ').toUpperCase() })
+      .setColor(event.color)
       .setTimestamp();
+
+    // ── Header bar: event type + case number
+    embed.setAuthor({
+      name: `${event.emoji}  ${event.label}  •  Case #${caseId}`,
+      iconURL: guildIcon || undefined
+    });
+
+    if (typeof data === 'string') {
+      // Legacy plain-string calls still work
+      embed.setDescription(data);
+      embed.setFooter({ text: `${event.category}  •  ${guildName}  •  RoNexus` });
+    } else {
+      const { executor, executorId, target, targetId, targetAvatar, reason, extra, fields, thumbnail } = data;
+
+      // Build description line
+      const descParts = [];
+      if (target)   descParts.push(`**Target:** ${target}`);
+      if (executor) descParts.push(`**Moderator:** ${executor}`);
+      if (descParts.length) embed.setDescription(descParts.join('  •  '));
+
+      const embedFields = [];
+
+      // IDs block (compact)
+      const idParts = [];
+      if (targetId)   idParts.push(`Target: \`${targetId}\``);
+      if (executorId) idParts.push(`Mod: \`${executorId}\``);
+      if (idParts.length) embedFields.push({ name: '🆔 IDs', value: idParts.join('\n'), inline: true });
+
+      // Category badge
+      embedFields.push({ name: '📂 Category', value: event.category, inline: true });
+
+      // Spacer
+      if (embedFields.length % 3 !== 0) embedFields.push({ name: '\u200b', value: '\u200b', inline: true });
+
+      if (reason) embedFields.push({ name: '📝 Reason', value: `> ${reason}`, inline: false });
+      if (extra)  embedFields.push({ name: '📌 Details', value: extra, inline: false });
+
+      if (fields && Array.isArray(fields)) fields.forEach(f => embedFields.push(f));
+
+      if (embedFields.length > 0) embed.addFields(embedFields);
+
+      // Thumbnail — show target's avatar if provided
+      if (thumbnail) embed.setThumbnail(thumbnail);
+
+      embed.setFooter({ text: `${guildName}  •  RoNexus Logs  •  Case #${caseId}` });
+    }
+
     await channel.send({ embeds: [embed] });
   } catch (e) { console.error('Log activity error:', e); }
 }
@@ -909,7 +982,7 @@ client.on('interactionCreate', async interaction => {
         'INSERT INTO guild_config (guild_id, verified_role_id) VALUES ($1, $2) ON CONFLICT (guild_id) DO UPDATE SET verified_role_id = $2',
         [guildId, role.id]
       );
-      await logActivity(guildId, 'config_change', `⚙️ <@${user.id}> set the verified role to ${role}`);
+      await logActivity(guildId, 'config_change', { executor: `<@${user.id}>`, executorId: user.id, extra: `Verified role set to ${role}`, fields: [{ name: '🎭 New Role', value: `${role}`, inline: true }] });
       return interaction.reply({
         embeds: [new EmbedBuilder()
           .setColor('#00FF00')
@@ -1039,7 +1112,7 @@ client.on('interactionCreate', async interaction => {
       } else {
         await pool.query('DELETE FROM command_permissions WHERE guild_id = $1 AND role_id = $2 AND command_name = $3', [guildId, role.id, command]);
       }
-      await logActivity(guildId, 'config_change', `⚙️ <@${user.id}> ${allow ? 'allowed' : 'denied'} ${role} to use \`/${command}\``);
+      await logActivity(guildId, 'config_change', { executor: `<@${user.id}>`, executorId: user.id, extra: `Permission ${allow ? '✅ Granted' : '❌ Denied'}: \`/${command}\` for ${role}` });
       return interaction.reply({ content: `✅ ${role} ${allow ? 'can now' : 'can no longer'} use \`/${command}\``, ephemeral: true });
     } catch (e) { return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true }); }
   }
@@ -1144,7 +1217,7 @@ client.on('interactionCreate', async interaction => {
       const result = await pool.query('DELETE FROM roblox_groups WHERE guild_id = $1 AND group_id = $2 RETURNING group_id', [guildId, groupId]);
       if (result.rows.length === 0) return interaction.reply({ content: `❌ Group **${groupId}** not found!`, ephemeral: true });
       await pool.query('DELETE FROM rank_mappings WHERE guild_id = $1', [guildId]);
-      await logActivity(guildId, 'config_change', `🗑️ <@${user.id}> removed Roblox group **${groupId}**`);
+      await logActivity(guildId, 'group_removed', { executor: `<@${user.id}>`, executorId: user.id, extra: `Group ID: \`${groupId}\`` });
       return interaction.reply({ content: `✅ Removed group **${groupId}**!`, ephemeral: true });
     } catch (e) { return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true }); }
   }
@@ -1198,7 +1271,7 @@ client.on('interactionCreate', async interaction => {
     await pool.query('INSERT INTO user_points (guild_id, user_id, points) VALUES ($1, $2, $3) ON CONFLICT (guild_id, user_id) DO UPDATE SET points = user_points.points + $3', [guildId, targetId, amount]);
     const newRes = await pool.query('SELECT points FROM user_points WHERE guild_id = $1 AND user_id = $2', [guildId, targetId]);
     await checkAndPromote(guildId, targetId, newRes.rows[0].points);
-    await logActivity(guildId, 'points_added', `💰 <@${user.id}> awarded **${amount}** points to <@${targetId}>\n**Reason:** ${reason}\n**Balance:** ${oldPoints} → ${newRes.rows[0].points}`);
+    await logActivity(guildId, 'points_added', { executor: `<@${user.id}>`, executorId: user.id, target: `<@${targetId}>`, targetId, reason, fields: [{ name: '💰 Amount', value: `+${amount} pts`, inline: true }, { name: '📊 Balance', value: `${oldPoints} → ${newRes.rows[0].points}`, inline: true }] });
     return interaction.reply({ content: `✅ Awarded **${amount}** points to <@${targetId}>\n**Reason:** ${reason}\n**Balance:** ${oldPoints} → ${newRes.rows[0].points}` });
   }
   // ============================================
@@ -1222,7 +1295,7 @@ client.on('interactionCreate', async interaction => {
     await pool.query('UPDATE user_points SET points = GREATEST(0, points - $1) WHERE guild_id = $2 AND user_id = $3', [amount, guildId, targetId]);
     const newRes = await pool.query('SELECT points FROM user_points WHERE guild_id = $1 AND user_id = $2', [guildId, targetId]);
     const newPoints = newRes.rows.length > 0 ? newRes.rows[0].points : 0;
-    await logActivity(guildId, 'points_removed', `💸 <@${user.id}> removed **${oldPoints - newPoints}** points from <@${targetId}>\n**Reason:** ${reason}\n**Balance:** ${oldPoints} → ${newPoints}`);
+    await logActivity(guildId, 'points_removed', { executor: `<@${user.id}>`, executorId: user.id, target: `<@${targetId}>`, targetId, reason, fields: [{ name: '💸 Amount', value: `-${oldPoints - newPoints} pts`, inline: true }, { name: '📊 Balance', value: `${oldPoints} → ${newPoints}`, inline: true }] });
     return interaction.reply({ content: `✅ Removed **${oldPoints - newPoints}** points from <@${targetId}>\n**Reason:** ${reason}\n**Balance:** ${oldPoints} → ${newPoints}` });
   }
   // ============================================
@@ -1376,7 +1449,7 @@ client.on('interactionCreate', async interaction => {
       }
       const warnToRemove = warns.rows[warnNumber - 1];
       await pool.query('DELETE FROM warnings WHERE id = $1', [warnToRemove.id]);
-      await logActivity(guildId, 'warning', `🗑️ <@${user.id}> removed warning #${warnNumber} from <@${target.id}>\n**Removed Warning:** ${warnToRemove.reason}`);
+      await logActivity(guildId, 'warning_removed', { executor: `<@${user.id}>`, executorId: user.id, target: `<@${target.id}>`, targetId: target.id, extra: `Removed Warning #${warnNumber}`, fields: [{ name: '📝 Warning Was', value: warnToRemove.reason, inline: false }] });
       return interaction.reply({
         embeds: [new EmbedBuilder()
           .setColor('#00FF00')
@@ -1413,7 +1486,7 @@ client.on('interactionCreate', async interaction => {
     try {
       const member = await interaction.guild.members.fetch(target.id);
       await member.kick(reason);
-      await logActivity(guildId, 'kick', `👢 ${target} kicked by <@${user.id}>\n**Reason:** ${reason}`);
+      await logActivity(guildId, 'kick', { executor: `<@${user.id}>`, executorId: user.id, target: `${target} (${target.tag})`, targetId: target.id, reason: reason || 'No reason provided' });
       return interaction.reply({ content: `👢 Kicked ${target}\n**Reason:** ${reason}` });
     } catch (e) { return interaction.reply({ content: '❌ Cannot kick this user!', flags: [MessageFlags.Ephemeral] }); }
   }
@@ -1422,7 +1495,7 @@ client.on('interactionCreate', async interaction => {
     if (target.id === user.id) return interaction.reply({ content: '❌ You cannot ban yourself!', flags: [MessageFlags.Ephemeral] });
     try {
       await interaction.guild.members.ban(target, { reason });
-      await logActivity(guildId, 'ban', `🔨 ${target} banned by <@${user.id}>\n**Reason:** ${reason}`);
+      await logActivity(guildId, 'ban', { executor: `<@${user.id}>`, executorId: user.id, target: `${target} (${target.tag})`, targetId: target.id, reason: reason || 'No reason provided' });
       return interaction.reply({ content: `🔨 Banned ${target}\n**Reason:** ${reason}` });
     } catch (e) { return interaction.reply({ content: '❌ Cannot ban this user!', ephemeral: true }); }
   }
@@ -1430,7 +1503,7 @@ client.on('interactionCreate', async interaction => {
     const target = options.getUser('user'), reason = options.getString('reason');
     try {
       await pool.query('INSERT INTO warnings (guild_id, user_id, moderator_id, reason) VALUES ($1, $2, $3, $4)', [guildId, target.id, user.id, reason]);
-      await logActivity(guildId, 'warning', `⚠️ ${target} warned by <@${user.id}>\n**Reason:** ${reason}`);
+      await logActivity(guildId, 'warning_issued', { executor: `<@${user.id}>`, executorId: user.id, target: `${target} (${target.tag})`, targetId: target.id, reason });
       return interaction.reply({ content: `⚠️ Warned ${target}\n**Reason:** ${reason}` });
     } catch (e) { return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true }); }
   }
@@ -1442,7 +1515,7 @@ client.on('interactionCreate', async interaction => {
     try {
       if (!channel.isTextBased()) return interaction.reply({ content: '❌ Please select a text channel.', ephemeral: true });
       await channel.send(message);
-      await logActivity(guildId, 'config_change', `📢 <@${user.id}> posted announcement in ${channel}`);
+      await logActivity(guildId, 'announce', { executor: `<@${user.id}>`, executorId: user.id, extra: `Posted in ${channel}`, fields: [{ name: '📝 Message Preview', value: message.length > 200 ? message.substring(0,200) + '...' : message, inline: false }] });
       return interaction.reply({ content: `✅ Announcement posted in ${channel}`, ephemeral: true });
     } catch (e) { return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true }); }
   }
@@ -1451,7 +1524,7 @@ client.on('interactionCreate', async interaction => {
     try {
       if (!channel.isTextBased()) return interaction.reply({ content: '❌ Please select a text channel.', ephemeral: true });
       await channel.send({ embeds: [new EmbedBuilder().setTitle(title).setDescription(message).setColor(color).setTimestamp()] });
-      await logActivity(guildId, 'config_change', `📢 <@${user.id}> posted embed in ${channel}\n**Title:** ${title}`);
+      await logActivity(guildId, 'announce', { executor: `<@${user.id}>`, executorId: user.id, extra: `Embed posted in ${channel}`, fields: [{ name: '📌 Title', value: title, inline: true }] });
       return interaction.reply({ content: `✅ Embed posted in ${channel}`, ephemeral: true });
     } catch (e) { return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true }); }
   }
@@ -1465,7 +1538,7 @@ client.on('interactionCreate', async interaction => {
       } else {
         await target.send(`**📩 Message from ${interaction.guild.name} Staff:**\n\n${message}`);
       }
-      await logActivity(guildId, 'dm_sent', `📧 <@${user.id}> sent DM to **${target.tag}**\n**Message:** ${message.substring(0, 150)}`);
+      await logActivity(guildId, 'dm_sent', { executor: `<@${user.id}>`, executorId: user.id, target: `${target.tag}`, targetId: target.id, fields: [{ name: '📧 Message', value: message.length > 200 ? message.substring(0,200)+'...' : message, inline: false }, { name: '📦 Type', value: useEmbed ? 'Embed' : 'Plain Text', inline: true }] });
       return interaction.reply({ content: `✅ DM sent to ${target.username}`, ephemeral: true });
     } catch (e) {
       if (e.code === 50007) return interaction.reply({ content: `❌ Cannot DM ${target.username} — DMs may be disabled.`, ephemeral: true });
@@ -1480,7 +1553,7 @@ client.on('interactionCreate', async interaction => {
     try {
       const msg = await channel.send(message);
       await pool.query('INSERT INTO sticky_messages (guild_id, channel_id, message_content, last_message_id) VALUES ($1, $2, $3, $4) ON CONFLICT (guild_id, channel_id) DO UPDATE SET message_content = $3, last_message_id = $4', [guildId, channel.id, message, msg.id]);
-      await logActivity(guildId, 'config_change', `📌 <@${user.id}> created sticky in ${channel}`);
+      await logActivity(guildId, 'sticky', { executor: `<@${user.id}>`, executorId: user.id, extra: `Sticky created in ${channel}`, fields: [{ name: '📝 Message', value: message.length > 200 ? message.substring(0,200)+'...' : message, inline: false }] });
       return interaction.reply({ content: `✅ Sticky message created in ${channel}`, ephemeral: true });
     } catch (e) { return interaction.reply({ content: `❌ ${e.message}`, ephemeral: true }); }
   }
@@ -1546,7 +1619,7 @@ app.get('/auth/callback', async (req, res) => {
       const abbreviation = configRes.rows.length > 0 ? configRes.rows[0].rank_abbreviation : null;
       await updateNickname(guild, pending.userId, robloxUsername, abbreviation);
       await giveVerifiedRole(guild, pending.userId);
-      await logActivity(pending.guildId, 'verification', `✅ <@${pending.userId}> verified as **${robloxUsername}** (ID: ${robloxId})`);
+      await logActivity(pending.guildId, 'verification', { target: `<@${pending.userId}>`, targetId: pending.userId, fields: [{ name: '🎮 Roblox Username', value: robloxUsername, inline: true }, { name: '🆔 Roblox ID', value: robloxId, inline: true }] });
     }
     pendingVerifications.delete(state);
     res.send(`<!DOCTYPE html><html><head><title>✅ Verified - RoNexus</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#030712 0%,#0b1120 100%);color:white}.container{text-align:center;padding:60px 40px;max-width:500px}.logo{font-size:48px;font-weight:800;margin-bottom:40px;letter-spacing:-1px}.logo-ro{color:#0ea5e9}.checkmark{width:80px;height:80px;border-radius:50%;background:rgba(34,197,94,0.15);border:2px solid #22c55e;display:flex;align-items:center;justify-content:center;margin:0 auto 24px;animation:scaleIn 0.5s ease-out}@keyframes scaleIn{from{transform:scale(0);opacity:0}to{transform:scale(1);opacity:1}}.checkmark svg{width:48px;height:48px;stroke:#22c55e;stroke-width:4;fill:none;stroke-linecap:round;stroke-linejoin:round;animation:draw 0.8s ease-out 0.3s forwards;stroke-dasharray:100;stroke-dashoffset:100}@keyframes draw{to{stroke-dashoffset:0}}h1{font-size:36px;margin-bottom:16px;color:#22c55e}.box{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);padding:28px;border-radius:16px;margin:24px 0}.username{font-size:28px;font-weight:700;color:#0ea5e9;margin-bottom:16px}.detail{font-size:14px;color:#94a3b8;margin:8px 0}.footer{margin-top:24px;font-size:13px;color:#475569}</style></head><body><div class="container"><div class="logo"><span class="logo-ro">Ro</span>Nexus</div><div class="checkmark"><svg viewBox="0 0 52 52"><path d="M14 27l7 7 16-16"/></svg></div><h1>Verified!</h1><div class="box"><div class="username">🎮 ${robloxUsername}</div><div class="detail">✅ Discord Nickname Updated</div><div class="detail">🎭 Verified Role Granted</div><div class="detail">🔗 Account Linked</div></div><div class="footer">You can close this page and return to Discord</div></div></body></html>`);
