@@ -1657,7 +1657,7 @@ app.get('/RoNexus.png', (req, res) => res.sendFile(__dirname + '/RoNexus.png'));
 app.get('/seb.webp', (req, res) => res.sendFile(__dirname + '/seb.webp'));
 app.get('/admin/create-enterprise-license', async (req, res) => {
   try {
-    const licenseKey = 'RONEXUS-ENTERPRISE-TEST-FREE';
+    const licenseKey = 'RONEXUS-ENTERPRISE-TEST-FREE!';
     const existing = await pool.query('SELECT * FROM licenses WHERE license_key = $1', [licenseKey]);
     if (existing.rows.length > 0) return res.send('✅ License already exists! Use: /activate RONEXUS-ENTERPRISE-TEST-FREE');
     await pool.query('INSERT INTO licenses (license_key, tier, max_servers, max_groups, is_active) VALUES ($1, $2, $3, $4, $5)', [licenseKey, 'enterprise', -1, -1, true]);
