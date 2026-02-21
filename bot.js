@@ -257,21 +257,29 @@ async function checkIfPrivateProfile(userId) {
 }
 async function getPreviousUsernames(userId) {
   try {
-    const userRes = await axios.get(`https://users.roblox.com/v1/users/${userId}`);
     const names = [];
+    // Get current user info
+    const userRes = await axios.get(`https://users.roblox.com/v1/users/${userId}`, { timeout: 5000 });
+    
+    // Display name if different
     if (userRes.data.displayName && userRes.data.displayName !== userRes.data.name) {
-      names.push(userRes.data.displayName);
+      names.push(`${userRes.data.displayName} (display name)`);
     }
+
+    // Username history endpoint
     try {
-      const gamesRes = await axios.get(`https://games.roblox.com/v2/users/${userId}/games?limit=10`);
-      if (gamesRes.data.data && gamesRes.data.data.length > 0) {
-        gamesRes.data.data.forEach(game => {
-          if (game.creator && game.creator.name && game.creator.name !== userRes.data.name) {
-            if (!names.includes(game.creator.name)) names.push(game.creator.name);
+      const historyRes = await axios.get(`https://users.roblox.com/v1/users/${userId}/username-history?limit=50&sortOrder=Asc`, { timeout: 5000 });
+      if (historyRes.data && historyRes.data.data && historyRes.data.data.length > 0) {
+        historyRes.data.data.forEach(entry => {
+          if (entry.name && entry.name !== userRes.data.name && !names.includes(entry.name)) {
+            names.push(entry.name);
           }
         });
       }
-    } catch (e) {}
+    } catch (e) {
+      // Username history may be unavailable, silently fail
+    }
+
     return names;
   } catch (e) { return []; }
 }
@@ -311,18 +319,37 @@ async function getUserGames(userId) {
 async function getUserGamePasses(userId) {
   try {
     let allPasses = [], cursor = '';
-    while (allPasses.length < 100) {
+    // Try catalog API first (more reliable, works on public profiles)
+    while (allPasses.length < 200) {
       const url = cursor
-        ? `https://inventory.roblox.com/v1/users/${userId}/items/GamePass?limit=100&cursor=${cursor}`
-        : `https://inventory.roblox.com/v1/users/${userId}/items/GamePass?limit=100`;
-      const res = await axios.get(url);
-      const passes = res.data.data || [];
-      allPasses = allPasses.concat(passes);
-      if (!res.data.nextPageCursor || passes.length === 0) break;
-      cursor = res.data.nextPageCursor;
+        ? `https://catalog.roblox.com/v1/search/items?category=GamePass&creatorType=User&creatorTargetId=${userId}&limit=30&cursor=${cursor}`
+        : `https://catalog.roblox.com/v1/search/items?category=GamePass&creatorType=User&creatorTargetId=${userId}&limit=30`;
+      try {
+        const res = await axios.get(url, { timeout: 8000 });
+        const passes = res.data.data || [];
+        allPasses = allPasses.concat(passes);
+        if (!res.data.nextPageCursor || passes.length === 0) break;
+        cursor = res.data.nextPageCursor;
+      } catch (e) { break; }
+    }
+    // If catalog returned nothing, try inventory API as fallback
+    if (allPasses.length === 0) {
+      cursor = '';
+      while (allPasses.length < 200) {
+        const url = cursor
+          ? `https://inventory.roblox.com/v1/users/${userId}/items/GamePass?limit=100&cursor=${cursor}`
+          : `https://inventory.roblox.com/v1/users/${userId}/items/GamePass?limit=100`;
+        try {
+          const res = await axios.get(url, { timeout: 8000 });
+          const passes = res.data.data || [];
+          allPasses = allPasses.concat(passes);
+          if (!res.data.nextPageCursor || passes.length === 0) break;
+          cursor = res.data.nextPageCursor;
+        } catch (e) { break; }
+      }
     }
     return allPasses;
-  } catch (e) { return []; }
+  } catch (e) { console.error('GamePasses error:', e.message); return []; }
 }
 async function getAllBadges(userId) {
   try {
@@ -786,7 +813,9 @@ client.on('interactionCreate', async interaction => {
         }
         if (allFriends.length === 0) return interaction.editReply({ content: '📋 User has no friends!' });
         const itemsPerPage = 15, totalPages = Math.ceil(allFriends.length / itemsPerPage), start = page * itemsPerPage, end = start + itemsPerPage;
-        const friendList = allFriends.slice(start, end).map((f, i) => `${start + i + 1}. **${f.name}** (${f.id})`).join('\n');
+        const friendList = allFriends.slice(start, end).map((f, i) => 
+          `${start + i + 1}. **${f.displayName || f.name}** · \`${f.name}\` · ID: \`${f.id}\``
+        ).join('\n');
         const embed = new EmbedBuilder().setColor('#9B59B6').setTitle('👥 Additional Information - Friends').setDescription(`**Roblox ID:** ${robloxId}\n**Total Friends:** ${allFriends.length}\n\n${friendList}`).setFooter({ text: `Showing ${start + 1}-${Math.min(end, allFriends.length)} of ${allFriends.length} friends | Page ${page + 1}/${totalPages}` });
         const buttons = new ActionRowBuilder();
         if (page > 0) buttons.addComponents(new ButtonBuilder().setCustomId(`friends_${robloxId}_${page - 1}`).setLabel('◀ Back').setStyle(ButtonStyle.Secondary));
@@ -1243,8 +1272,17 @@ client.on('interactionCreate', async interaction => {
       const riskColor = riskLevel === 'CRITICAL' ? '#FF0000' : riskLevel === 'HIGH' ? '#FFA500' : riskLevel === 'MEDIUM' ? '#FFFF00' : '#00FF00';
       const altColor = altCheck.altScore >= 60 ? '🚨' : altCheck.altScore >= 40 ? '⚠️' : altCheck.altScore >= 20 ? '⚡' : '✅';
       let namesInfo = 'No alternate names found';
-      if (robloxInfo.displayName && robloxInfo.displayName !== robloxInfo.name) namesInfo = `**Display Name:** ${robloxInfo.displayName}`;
-      if (previousNames.length > 0) namesInfo = (namesInfo !== 'No alternate names found' ? namesInfo + '\n' : '') + `**Also known as:** ${previousNames.join(', ')}`;
+      const nameParts = [];
+      if (robloxInfo.displayName && robloxInfo.displayName !== robloxInfo.name) {
+        nameParts.push(`**Display Name:** ${robloxInfo.displayName}`);
+      }
+      if (previousNames.length > 0) {
+        const filtered = previousNames.filter(n => !n.includes('(display name)'));
+        const displayNames = previousNames.filter(n => n.includes('(display name)')).map(n => n.replace(' (display name)', ''));
+        if (displayNames.length > 0 && !nameParts.length) nameParts.push(`**Display Name:** ${displayNames.join(', ')}`);
+        if (filtered.length > 0) nameParts.push(`**Past Usernames:** ${filtered.join(', ')}`);
+      }
+      if (nameParts.length > 0) namesInfo = nameParts.join('\n');
       const embed = new EmbedBuilder().setColor(riskColor).setTitle('🔍 Background Check').setDescription(`**${robloxUsername}** (ID: ${robloxId})\n🔗 [View Profile](https://www.roblox.com/users/${robloxId}/profile)`).addFields(
         { name: '⚠️ Risk Level', value: `${riskLevel} (${riskScore}/10)`, inline: true },
         { name: '🔒 Profile', value: isPrivate ? '🔐 Private' : '🌐 Public', inline: true },
