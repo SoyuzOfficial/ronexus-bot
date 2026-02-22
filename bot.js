@@ -3,7 +3,13 @@ const { Pool } = require('pg');
 const express = require('express');
 const axios = require('axios');
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
+const client = new Client({ intents: [
+  GatewayIntentBits.Guilds,
+  GatewayIntentBits.GuildMembers,
+  GatewayIntentBits.GuildMessages,
+  GatewayIntentBits.MessageContent,       // ⚠️ Enable in Discord Dev Portal → Bot → Privileged Intents
+  GatewayIntentBits.GuildMessageReactions,
+] });
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ROBLOX_CLIENT_ID = process.env.ROBLOX_CLIENT_ID;
@@ -311,6 +317,12 @@ const LOG_EVENTS = {
   group_added:     { color: 0x10b981, emoji: '➕', label: 'Group Added',        category: '⚙️ Settings',   border: '🟢' },
   group_removed:   { color: 0xef4444, emoji: '➖', label: 'Group Removed',      category: '⚙️ Settings',   border: '🔴' },
   role_sync:       { color: 0xf59e0b, emoji: '🔄', label: 'Role Synced',        category: '🎭 Roles',      border: '🟡' },
+  msg_delete:      { color: 0xfbbf24, emoji: '🗑️', label: 'Message Deleted',    category: '💬 Messages',   border: '🟡' },
+  msg_edit:        { color: 0x60a5fa, emoji: '✏️',  label: 'Message Edited',     category: '💬 Messages',   border: '🔵' },
+  member_join:     { color: 0x22c55e, emoji: '📥', label: 'Member Joined',      category: '👤 Member',     border: '🟢' },
+  member_leave:    { color: 0xf87171, emoji: '📤', label: 'Member Left',        category: '👤 Member',     border: '🔴' },
+  spam_detected:   { color: 0xff4500, emoji: '🚨', label: 'Spam Detected',      category: '🔒 Security',   border: '🔴' },
+  ping_spam:       { color: 0xdc2626, emoji: '🔔', label: 'Ping Spam Detected', category: '🔒 Security',   border: '⛔' },
 };
 
 async function logActivity(guildId, eventType, data) {
@@ -386,37 +398,51 @@ async function getUserGames(userId) {
   } catch (e) { return []; }
 }
 async function getUserGamePasses(userId) {
+  // Strategy: get user's games first, then fetch passes per game
   try {
-    let allPasses = [], cursor = '';
-    // Try catalog API first (more reliable, works on public profiles)
-    while (allPasses.length < 200) {
-      const url = cursor
-        ? `https://catalog.roblox.com/v1/search/items?category=GamePass&creatorType=User&creatorTargetId=${userId}&limit=30&cursor=${cursor}`
-        : `https://catalog.roblox.com/v1/search/items?category=GamePass&creatorType=User&creatorTargetId=${userId}&limit=30`;
+    const allPasses = [];
+
+    // Step 1: get user's created games
+    let games = [];
+    try {
+      const gRes = await axios.get(`https://games.roblox.com/v2/users/${userId}/games?limit=50&sortOrder=Desc`, { timeout: 8000 });
+      games = gRes.data.data || [];
+    } catch (e) {}
+
+    // Step 2: for each game, get its gamepasses
+    for (const game of games.slice(0, 20)) {
       try {
-        const res = await axios.get(url, { timeout: 8000 });
-        const passes = res.data.data || [];
-        allPasses = allPasses.concat(passes);
-        if (!res.data.nextPageCursor || passes.length === 0) break;
-        cursor = res.data.nextPageCursor;
-      } catch (e) { break; }
+        let gpCursor = '';
+        while (true) {
+          const url = gpCursor
+            ? `https://games.roblox.com/v1/games/${game.id}/game-passes?limit=100&cursor=${gpCursor}`
+            : `https://games.roblox.com/v1/games/${game.id}/game-passes?limit=100`;
+          const gpRes = await axios.get(url, { timeout: 5000 });
+          const passes = gpRes.data.data || [];
+          passes.forEach(p => allPasses.push({ name: p.name, id: p.id, gameName: game.name }));
+          if (!gpRes.data.nextPageCursor || passes.length === 0) break;
+          gpCursor = gpRes.data.nextPageCursor;
+        }
+      } catch (e) {}
     }
-    // If catalog returned nothing, try inventory API as fallback
+
+    // Step 3: fallback — inventory API (works if profile is public)
     if (allPasses.length === 0) {
-      cursor = '';
-      while (allPasses.length < 200) {
-        const url = cursor
-          ? `https://inventory.roblox.com/v1/users/${userId}/items/GamePass?limit=100&cursor=${cursor}`
-          : `https://inventory.roblox.com/v1/users/${userId}/items/GamePass?limit=100`;
-        try {
+      try {
+        let cursor = '';
+        while (allPasses.length < 200) {
+          const url = cursor
+            ? `https://inventory.roblox.com/v1/users/${userId}/items/GamePass?limit=100&cursor=${cursor}`
+            : `https://inventory.roblox.com/v1/users/${userId}/items/GamePass?limit=100`;
           const res = await axios.get(url, { timeout: 8000 });
           const passes = res.data.data || [];
-          allPasses = allPasses.concat(passes);
+          passes.forEach(p => allPasses.push({ name: p.name, id: p.assetId || p.id, gameName: 'Unknown' }));
           if (!res.data.nextPageCursor || passes.length === 0) break;
           cursor = res.data.nextPageCursor;
-        } catch (e) { break; }
-      }
+        }
+      } catch (e) {}
     }
+
     return allPasses;
   } catch (e) { console.error('GamePasses error:', e.message); return []; }
 }
@@ -771,44 +797,219 @@ client.once('ready', async () => {
 // ============================================
 // MEMBER JOIN EVENT
 // ============================================
+// ============================================
+// MEMBER JOIN
+// ============================================
 client.on('guildMemberAdd', async (member) => {
   try {
     const guildId = member.guild.id;
     const config = await pool.query('SELECT unverified_role_id, welcome_channel_id, welcome_message FROM guild_config WHERE guild_id = $1', [guildId]);
+
+    // Give unverified role & send welcome
     if (config.rows.length > 0) {
       const { unverified_role_id, welcome_channel_id, welcome_message } = config.rows[0];
       if (unverified_role_id) {
-        try {
-          const role = member.guild.roles.cache.get(unverified_role_id);
-          if (role) await member.roles.add(role);
-        } catch (e) { console.error('Failed to give unverified role:', e.message); }
+        try { const role = member.guild.roles.cache.get(unverified_role_id); if (role) await member.roles.add(role); } catch (e) {}
       }
       if (welcome_channel_id && welcome_message) {
         try {
-          const channel = member.guild.channels.cache.get(welcome_channel_id);
-          if (channel && channel.isTextBased()) {
-            const formattedMessage = welcome_message.replace(/{user}/g, `<@${member.id}>`).replace(/{server}/g, member.guild.name);
-            await channel.send(formattedMessage);
+          const ch = member.guild.channels.cache.get(welcome_channel_id);
+          if (ch && ch.isTextBased()) {
+            const msg = welcome_message.replace(/{user}/g, `<@${member.id}>`).replace(/{server}/g, member.guild.name);
+            await ch.send(msg);
           }
-        } catch (e) { console.error('Failed to send welcome message:', e.message); }
+        } catch (e) {}
       }
     }
-  } catch (e) { console.error('Member join event error:', e); }
+
+    // Log join
+    const accountAge = Math.floor((Date.now() - member.user.createdAt.getTime()) / (1000 * 60 * 60 * 24));
+    const newAcctWarning = accountAge < 7 ? '⚠️ **New account!**' : '';
+    await logActivity(guildId, 'member_join', {
+      target: `${member.user.tag}`,
+      targetId: member.id,
+      fields: [
+        { name: '📅 Account Created', value: `<t:${Math.floor(member.user.createdAt.getTime()/1000)}:R>`, inline: true },
+        { name: '🗓️ Account Age', value: `${accountAge} days ${newAcctWarning}`, inline: true },
+        { name: '👤 Members Now', value: `${member.guild.memberCount}`, inline: true },
+      ],
+      thumbnail: member.user.displayAvatarURL({ dynamic: true })
+    });
+  } catch (e) { console.error('Member join error:', e); }
 });
+
 // ============================================
-// STICKY MESSAGES HANDLER
+// MEMBER LEAVE
 // ============================================
-client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
+client.on('guildMemberRemove', async (member) => {
   try {
-    const sticky = await pool.query('SELECT message_content, last_message_id FROM sticky_messages WHERE guild_id = $1 AND channel_id = $2', [message.guild.id, message.channel.id]);
+    const guildId = member.guild.id;
+    const roles = member.roles.cache.filter(r => r.id !== member.guild.id).map(r => `${r}`).join(', ') || 'None';
+    const joinedAgo = member.joinedAt
+      ? Math.floor((Date.now() - member.joinedAt.getTime()) / (1000 * 60 * 60 * 24))
+      : null;
+
+    await logActivity(guildId, 'member_leave', {
+      target: `${member.user.tag}`,
+      targetId: member.id,
+      fields: [
+        { name: '⏱️ Was in server', value: joinedAgo !== null ? `${joinedAgo} days` : 'Unknown', inline: true },
+        { name: '👤 Members Now', value: `${member.guild.memberCount}`, inline: true },
+        { name: '🎭 Had Roles', value: roles.length > 500 ? roles.substring(0, 497) + '...' : roles, inline: false },
+      ],
+      thumbnail: member.user.displayAvatarURL({ dynamic: true })
+    });
+  } catch (e) { console.error('Member leave error:', e); }
+});
+
+// ============================================
+// MESSAGE DELETE LOG
+// ============================================
+client.on('messageDelete', async (message) => {
+  if (!message.guild || message.author?.bot) return;
+  try {
+    const content = message.content || '*[No text content — embed or attachment]*';
+    const attachments = message.attachments.size > 0
+      ? message.attachments.map(a => a.url).join('\n')
+      : null;
+
+    await logActivity(message.guild.id, 'msg_delete', {
+      target: message.author ? `${message.author.tag}` : 'Unknown User',
+      targetId: message.author?.id,
+      fields: [
+        { name: '📺 Channel', value: `<#${message.channelId}>`, inline: true },
+        { name: '🆔 Message ID', value: `\`${message.id}\``, inline: true },
+        { name: '📝 Content', value: content.length > 1000 ? content.substring(0, 997) + '...' : content, inline: false },
+        ...(attachments ? [{ name: '📎 Attachments', value: attachments, inline: false }] : []),
+      ],
+      thumbnail: message.author?.displayAvatarURL({ dynamic: true })
+    });
+  } catch (e) {}
+});
+
+// ============================================
+// MESSAGE EDIT LOG
+// ============================================
+client.on('messageUpdate', async (oldMsg, newMsg) => {
+  if (!newMsg.guild || newMsg.author?.bot) return;
+  if (oldMsg.content === newMsg.content) return; // embed unfurl — ignore
+  try {
+    const before = oldMsg.content || '*[Unknown — not cached]*';
+    const after  = newMsg.content || '*[Empty]*';
+
+    await logActivity(newMsg.guild.id, 'msg_edit', {
+      target: `${newMsg.author.tag}`,
+      targetId: newMsg.author.id,
+      fields: [
+        { name: '📺 Channel', value: `<#${newMsg.channelId}>`, inline: true },
+        { name: '🔗 Jump', value: `[View Message](${newMsg.url})`, inline: true },
+        { name: '📝 Before', value: before.length > 500 ? before.substring(0, 497) + '...' : before, inline: false },
+        { name: '✏️ After',  value: after.length > 500  ? after.substring(0, 497) + '...' : after,  inline: false },
+      ],
+      thumbnail: newMsg.author.displayAvatarURL({ dynamic: true })
+    });
+  } catch (e) {}
+});
+
+// ============================================
+// ANTI-SPAM + STICKY MESSAGES
+// ============================================
+const spamTracker = new Map(); // userId_guildId -> { count, firstMsg, timeout }
+const SPAM_THRESHOLD    = 6;   // messages within window to trigger
+const SPAM_WINDOW_MS    = 5000; // 5 second window
+const PING_THRESHOLD    = 4;   // unique mentions to trigger ping spam
+
+client.on('messageCreate', async (message) => {
+  if (message.author.bot || !message.guild) return;
+
+  const guildId  = message.guild.id;
+  const userId   = message.author.id;
+  const key      = `${userId}_${guildId}`;
+
+  // ── ANTI-SPAM ──────────────────────────────────────────────────────────────
+  const now = Date.now();
+  if (!spamTracker.has(key)) {
+    spamTracker.set(key, { count: 1, firstMsg: now, warned: false });
+  } else {
+    const tracker = spamTracker.get(key);
+    if (now - tracker.firstMsg < SPAM_WINDOW_MS) {
+      tracker.count++;
+      if (tracker.count >= SPAM_THRESHOLD && !tracker.warned) {
+        tracker.warned = true;
+        // Delete recent messages
+        try {
+          const fetched = await message.channel.messages.fetch({ limit: 10 });
+          const userMsgs = fetched.filter(m => m.author.id === userId);
+          await message.channel.bulkDelete(userMsgs, true);
+        } catch (e) {}
+
+        // Warn in channel
+        const warnMsg = await message.channel.send({ embeds: [{
+          color: 0xff4500,
+          description: `🚨 <@${userId}> **Slow down!** You're sending messages too fast.`
+        }]});
+        setTimeout(() => warnMsg.delete().catch(() => {}), 5000);
+
+        await logActivity(guildId, 'spam_detected', {
+          target: `${message.author.tag}`,
+          targetId: userId,
+          fields: [
+            { name: '📺 Channel', value: `<#${message.channelId}>`, inline: true },
+            { name: '💬 Messages', value: `${tracker.count} in ${SPAM_WINDOW_MS/1000}s`, inline: true },
+            { name: '🛠️ Action Taken', value: 'Messages deleted + warning sent', inline: false },
+          ],
+          thumbnail: message.author.displayAvatarURL({ dynamic: true })
+        });
+      }
+    } else {
+      // Reset window
+      spamTracker.set(key, { count: 1, firstMsg: now, warned: false });
+    }
+  }
+
+  // ── PING SPAM ──────────────────────────────────────────────────────────────
+  const uniqueMentions = new Set([
+    ...message.mentions.users.keys(),
+    ...message.mentions.roles.keys()
+  ]);
+  if (uniqueMentions.size >= PING_THRESHOLD) {
+    try { await message.delete(); } catch (e) {}
+
+    const warnMsg = await message.channel.send({ embeds: [{
+      color: 0xdc2626,
+      description: `🔔 <@${userId}> **No mass pinging allowed!** Your message was removed.`
+    }]});
+    setTimeout(() => warnMsg.delete().catch(() => {}), 5000);
+
+    await logActivity(guildId, 'ping_spam', {
+      target: `${message.author.tag}`,
+      targetId: userId,
+      fields: [
+        { name: '📺 Channel', value: `<#${message.channelId}>`, inline: true },
+        { name: '🔔 Pings', value: `${uniqueMentions.size} unique mentions`, inline: true },
+        { name: '📝 Message', value: message.content.length > 500 ? message.content.substring(0, 497) + '...' : message.content, inline: false },
+        { name: '🛠️ Action', value: 'Message deleted + warning sent', inline: false },
+      ],
+      thumbnail: message.author.displayAvatarURL({ dynamic: true })
+    });
+  }
+
+  // ── STICKY MESSAGES ────────────────────────────────────────────────────────
+  try {
+    const sticky = await pool.query(
+      'SELECT message_content, last_message_id FROM sticky_messages WHERE guild_id = $1 AND channel_id = $2',
+      [guildId, message.channel.id]
+    );
     if (sticky.rows.length > 0) {
       const { message_content, last_message_id } = sticky.rows[0];
       if (last_message_id) {
-        try { const oldMsg = await message.channel.messages.fetch(last_message_id); await oldMsg.delete(); } catch (e) {}
+        try { const old = await message.channel.messages.fetch(last_message_id); await old.delete(); } catch (e) {}
       }
       const newSticky = await message.channel.send(message_content);
-      await pool.query('UPDATE sticky_messages SET last_message_id = $1 WHERE guild_id = $2 AND channel_id = $3', [newSticky.id, message.guild.id, message.channel.id]);
+      await pool.query(
+        'UPDATE sticky_messages SET last_message_id = $1 WHERE guild_id = $2 AND channel_id = $3',
+        [newSticky.id, guildId, message.channel.id]
+      );
     }
   } catch (e) {}
 });
@@ -1657,7 +1858,7 @@ app.get('/RoNexus.png', (req, res) => res.sendFile(__dirname + '/RoNexus.png'));
 app.get('/seb.webp', (req, res) => res.sendFile(__dirname + '/seb.webp'));
 app.get('/admin/create-enterprise-license', async (req, res) => {
   try {
-    const licenseKey = 'RONEXUS-ENTERPRISE-TEST-FREE!';
+    const licenseKey = 'RONEXUS-ENTERPRISE-TEST-FREE';
     const existing = await pool.query('SELECT * FROM licenses WHERE license_key = $1', [licenseKey]);
     if (existing.rows.length > 0) return res.send('✅ License already exists! Use: /activate RONEXUS-ENTERPRISE-TEST-FREE');
     await pool.query('INSERT INTO licenses (license_key, tier, max_servers, max_groups, is_active) VALUES ($1, $2, $3, $4, $5)', [licenseKey, 'enterprise', -1, -1, true]);
